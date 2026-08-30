@@ -1,0 +1,24 @@
+{
+  "utterances": [
+    {
+      "index": 1,
+      "start": 0.512,
+      "end": 2.104,
+      "speaker": "S1",
+      "text": "こんにちは、今日はいい天気ですね。",
+      "lang": "Japanese"
+    },
+    {
+      "index": 2,
+      "start": 3.008,
+      "end": 5.021,
+      "speaker": "S2",
+      "text": "そうですね、散歩に行きましょう。",
+      "lang": "Japanese"
+    }
+  ],
+  "total_sec": 5.875,
+  "frames": 141,
+  "wav_path": "voice.wav",
+  "n_images": 2
+}
