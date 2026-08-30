@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Tkinter GUI。h3_audio_prompter.py の UI を踏襲し、
-[C] 差し替え / [D] 検証 / モデル比較 のタブを追加したもの。
+"""Tkinter GUI。
 
+台詞の入力は「手動クリップ方式」: 波形をドラッグして範囲を選び、
+その範囲を再生して確かめながら台詞を打ち込み、行として追加する。
+自動検出は区間の下書きを表に流し込む補助に使う。
+
+右側のタブは
+  固定枠 [B] / 骨組み [B] / 差し替え [C] / 検証 [D] / モデル比較 / 運用設定。
 依存は numpy と tkinter のみ。ComfyUI 環境には一切依存しない。
 """
 
@@ -14,14 +19,281 @@ from tkinter import ttk, filedialog, messagebox
 from .grid import FPS, grid_candidates
 from .audio import read_wav, read_wav_raw_stereo, write_wav_pcm16, pad_to_seconds
 from .segments import detect_segments
-from .timeline import Timeline, build_timeline, parse_lines, fmt_ts
+from .timeline import (Timeline, Utterance, parse_lines, parse_ts, fmt_ts)
 from .scaffold import render_scaffold, render_prompt_skeleton, render_settings_note
 from .substitute import substitute
 from .validate import validate, render_report
 from .compare import compare_outputs, render_table, render_details
+from . import clips
 
 APP_TITLE = "MiniMax-H3 強制音声プロンプトビルダー"
 
+SPEAKER_COLORS = {
+    "S1": "#2f6fbd",
+    "S2": "#c2571a",
+    "S3": "#2e8b57",
+    "S4": "#8b5cf6",
+}
+OTHER_COLOR = "#666666"
+
+
+def _speaker_color(spk):
+    return SPEAKER_COLORS.get(spk, OTHER_COLOR)
+
+
+def _parse_time_field(text):
+    """'M:SS.mmm' でも '3.5' (秒) でも受ける。だめなら None。"""
+    s = (text or "").strip()
+    if not s:
+        return None
+    ts = parse_ts(s)
+    if ts is not None:
+        return ts
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 波形ビュー
+# ---------------------------------------------------------------------------
+
+class WaveformView(ttk.Frame):
+    """波形の表示と範囲選択。
+
+    - ドラッグ: 範囲選択 (on_range(a, b) を呼ぶ)
+    - クリック: その時刻を含む行を選ぶ (on_pick(t) を呼ぶ)
+    - ホイール: カーソル位置を中心にズーム
+    """
+
+    HEIGHT = 150
+    TICK_H = 16
+    MAX_PPS = 800.0
+
+    def __init__(self, master, on_range=None, on_pick=None):
+        super().__init__(master)
+        self.on_range = on_range
+        self.on_pick = on_pick
+
+        self.samples = None
+        self.sr = 0
+        self.duration = 0.0
+        self.pps = None            # pixels per second (None = 音声なし)
+        self.rows = []             # Utterance の列 (参照)
+        self.selected_index = None # 選択中の行 index (1 始まり) or None
+        self.selection = None      # (a, b) or None
+        self.marker = None         # 動画長 (秒) or None
+        self._drag_from = None
+
+        self.columnconfigure(0, weight=1)
+        self.canvas = tk.Canvas(self, height=self.HEIGHT + self.TICK_H,
+                                background="#fafafa", highlightthickness=1,
+                                highlightbackground="#ccc")
+        self.canvas.grid(row=0, column=0, sticky="ew")
+        self.scroll = ttk.Scrollbar(self, orient="horizontal",
+                                    command=self.canvas.xview)
+        self.scroll.grid(row=1, column=0, sticky="ew")
+        self.canvas.configure(xscrollcommand=self.scroll.set)
+
+        self.canvas.bind("<ButtonPress-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.canvas.bind("<MouseWheel>", self._wheel)     # Windows / macOS
+        self.canvas.bind("<Button-4>", lambda e: self._wheel(e, +1))
+        self.canvas.bind("<Button-5>", lambda e: self._wheel(e, -1))
+        self.canvas.bind("<Configure>", lambda e: self._fit_if_unzoomed())
+
+    # -- 公開 API ------------------------------------------------------------
+
+    def set_audio(self, samples, sr):
+        self.samples = samples
+        self.sr = sr
+        self.duration = (len(samples) / sr) if (samples is not None and sr) else 0.0
+        self.selection = None
+        self.pps = None
+        self.zoom_fit()
+
+    def clear_audio(self):
+        self.samples = None
+        self.sr = 0
+        self.duration = 0.0
+        self.selection = None
+        self.pps = None
+        self.redraw()
+
+    def set_rows(self, rows, selected_index=None):
+        self.rows = rows
+        self.selected_index = selected_index
+        self.redraw()
+
+    def set_selection(self, a, b):
+        self.selection = (a, b)
+        self.redraw()
+
+    def clear_selection(self):
+        self.selection = None
+        self.redraw()
+
+    def set_marker(self, total_sec):
+        self.marker = total_sec
+        self.redraw()
+
+    def zoom_fit(self):
+        self.pps = self._fit_pps()
+        self.redraw()
+
+    # -- 内部 ----------------------------------------------------------------
+
+    def _fit_pps(self):
+        if not self.duration:
+            return None
+        width = self.canvas.winfo_width()
+        if width < 50:          # まだ配置前
+            width = 900
+        return max(1.0, (width - 4) / self.duration)
+
+    def _fit_if_unzoomed(self):
+        fit = self._fit_pps()
+        if fit is None:
+            return
+        # ズームしていない (= フィット幅のまま) ならリサイズに追従する
+        if self.pps is None or abs(self.pps - fit) < 1e-6 or self.pps < fit:
+            self.pps = fit
+            self.redraw()
+
+    def _t2x(self, t):
+        return t * self.pps
+
+    def _x2t(self, x):
+        return max(0.0, min(self.duration, x / self.pps)) if self.pps else 0.0
+
+    def _event_time(self, event):
+        return self._x2t(self.canvas.canvasx(event.x))
+
+    def _press(self, event):
+        if self.pps is None:
+            return
+        self._drag_from = (event.x, self._event_time(event))
+
+    def _drag(self, event):
+        if self._drag_from is None:
+            return
+        t0 = self._drag_from[1]
+        t1 = self._event_time(event)
+        self.selection = (min(t0, t1), max(t0, t1))
+        self.redraw()
+
+    def _release(self, event):
+        if self._drag_from is None:
+            return
+        x0, t0 = self._drag_from
+        self._drag_from = None
+        if abs(event.x - x0) < 4:
+            if self.on_pick:
+                self.on_pick(t0)
+            return
+        t1 = self._event_time(event)
+        a, b = min(t0, t1), max(t0, t1)
+        if b - a < 0.01:
+            return
+        self.selection = (a, b)
+        self.redraw()
+        if self.on_range:
+            self.on_range(a, b)
+
+    def _wheel(self, event, direction=None):
+        if self.pps is None:
+            return
+        if direction is None:
+            direction = +1 if event.delta > 0 else -1
+        factor = 1.25 if direction > 0 else 0.8
+        fit = self._fit_pps() or 1.0
+        anchor_t = self._event_time(event)
+        old_pps = self.pps
+        self.pps = min(self.MAX_PPS, max(fit, self.pps * factor))
+        if abs(self.pps - old_pps) < 1e-9:
+            return
+        self.redraw()
+        # カーソル位置の時刻が同じ画面位置に来るようにスクロール
+        total_w = self.duration * self.pps
+        left = self._t2x(anchor_t) - event.x
+        if total_w > 0:
+            self.canvas.xview_moveto(max(0.0, left / total_w))
+
+    def redraw(self):
+        c = self.canvas
+        c.delete("all")
+        if self.pps is None or not self.duration:
+            c.configure(scrollregion=(0, 0, 0, 0))
+            c.create_text(12, self.HEIGHT // 2, anchor="w", fill="#999",
+                          text="wav を開くと波形が表示されます")
+            return
+
+        W = int(self.duration * self.pps) + 1
+        H = self.HEIGHT
+        mid = H // 2
+        c.configure(scrollregion=(0, 0, W, H + self.TICK_H))
+
+        # 行の帯 (話者色)
+        for u in self.rows:
+            if u.start is None or u.end is None:
+                continue
+            x0, x1 = self._t2x(u.start), self._t2x(u.end)
+            color = _speaker_color(u.speaker)
+            sel = (self.selected_index == u.index)
+            c.create_rectangle(x0, 0, x1, H, fill=color, stipple="gray25",
+                               outline=color, width=3 if sel else 1)
+            c.create_text(x0 + 3, 3, anchor="nw", fill=color,
+                          font=("TkDefaultFont", 9, "bold"),
+                          text=f"[{u.index}] {u.speaker}" + ("" if u.text else " ※未入力"))
+
+        # 波形
+        if self.samples is not None and len(self.samples):
+            mins, maxs = clips.envelope(self.samples, W)
+            amp = (H // 2) - 6
+            for x in range(W):
+                y0 = mid - float(maxs[x]) * amp
+                y1 = mid - float(mins[x]) * amp
+                c.create_line(x, y0, x, y1, fill="#5b8bd0")
+        c.create_line(0, mid, W, mid, fill="#bbb")
+
+        # 動画長マーカー
+        if self.marker is not None and self.marker <= self.duration + 1e-6:
+            x = self._t2x(self.marker)
+            c.create_line(x, 0, x, H, fill="#d33", dash=(4, 3), width=2)
+
+        # 選択範囲
+        if self.selection:
+            a, b = self.selection
+            c.create_rectangle(self._t2x(a), 0, self._t2x(b), H,
+                               fill="#3b82f6", stipple="gray50",
+                               outline="#1d4ed8", width=2)
+
+        # 時間目盛り
+        step = 1.0
+        if self.pps < 12:
+            step = 5.0
+        minor = 0.1 if self.pps >= 240 else None
+        t = 0.0
+        while t <= self.duration + 1e-9:
+            x = self._t2x(t)
+            c.create_line(x, H, x, H + 6, fill="#888")
+            c.create_text(x + 2, H + self.TICK_H - 2, anchor="sw",
+                          fill="#666", font=("TkDefaultFont", 8),
+                          text=fmt_ts(t))
+            t += step
+        if minor:
+            t = 0.0
+            while t <= self.duration + 1e-9:
+                x = self._t2x(t)
+                c.create_line(x, H, x, H + 3, fill="#bbb")
+                t += minor
+
+
+# ---------------------------------------------------------------------------
+# 本体
+# ---------------------------------------------------------------------------
 
 class App(ttk.Frame):
     def __init__(self, master):
@@ -30,20 +302,21 @@ class App(ttk.Frame):
         master.columnconfigure(0, weight=1)
         master.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)
+        self.rowconfigure(4, weight=1)
 
         self.samples = None
         self.sr = None
         self.n_ch = 1
         self.wav_path = None
-        self.segments = []
-        self.rows = []
-        self.loaded_tl = None      # JSON から読んだタイムライン (wav なし運用)
-        self.cmp_entries = []      # [(名前, テキスト)]
+        self.loaded_tl = None       # JSON 読込時の尺情報 (wav なし運用)
+        self.utts = []              # 発話クリップの表 (Utterance のリスト)
+        self.sel_row = None         # 選択中の行 index (1 始まり)
+        self.cmp_entries = []       # [(名前, テキスト)]
+        self.player = clips.Player()
 
         self._build_file_row()
         self._build_grid_row()
-        self._build_detect_row()
+        self._build_wave_row()
         self._build_body()
         self._build_status()
 
@@ -75,7 +348,7 @@ class App(ttk.Frame):
         ttk.Label(f, text="動画長:").grid(row=0, column=0, sticky="w")
         self.cmb_grid = ttk.Combobox(f, state="readonly", width=46, values=[])
         self.cmb_grid.grid(row=0, column=1, sticky="w", padx=(6, 8))
-        self.cmb_grid.bind("<<ComboboxSelected>>", lambda e: self.refresh_output())
+        self.cmb_grid.bind("<<ComboboxSelected>>", lambda e: self._on_grid_change())
 
         self.btn_pad = ttk.Button(f, text="パディング済み wav を書き出す",
                                   command=self.on_pad, state="disabled")
@@ -88,64 +361,127 @@ class App(ttk.Frame):
             foreground="#666", wraplength=780, justify="left",
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
-    def _build_detect_row(self):
-        f = ttk.LabelFrame(self, text="3. 発話区間の検出", padding=8)
+    def _build_wave_row(self):
+        f = ttk.LabelFrame(
+            self,
+            text="3. 発話クリップ — 波形をドラッグして範囲を選び、再生で確かめて台詞を入力",
+            padding=8)
         f.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        f.columnconfigure(0, weight=1)
 
-        ttk.Label(f, text="しきい値 (dB):").grid(row=0, column=0, sticky="w")
-        self.var_thresh = tk.DoubleVar(value=-40.0)
-        s = ttk.Scale(f, from_=-70, to=-15, variable=self.var_thresh,
-                      orient="horizontal", length=170,
-                      command=lambda e: self.var_thresh_lbl.set(
-                          f"{self.var_thresh.get():.0f}"))
-        s.grid(row=0, column=1, padx=(6, 4))
-        self.var_thresh_lbl = tk.StringVar(value="-40")
-        ttk.Label(f, textvariable=self.var_thresh_lbl, width=5).grid(row=0, column=2)
+        self.wave = WaveformView(f, on_range=self.on_wave_range,
+                                 on_pick=self.on_wave_pick)
+        self.wave.grid(row=0, column=0, sticky="ew")
 
-        ttk.Label(f, text="無音とみなす長さ (ms):").grid(row=0, column=3, sticky="w",
-                                                        padx=(14, 0))
-        self.var_sil = tk.IntVar(value=250)
-        ttk.Spinbox(f, from_=50, to=2000, increment=50, width=7,
-                    textvariable=self.var_sil).grid(row=0, column=4, padx=(6, 0))
+        bar = ttk.Frame(f)
+        bar.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
-        ttk.Button(f, text="再検出", command=self.on_detect).grid(
-            row=0, column=5, padx=(14, 0))
+        self.var_selinfo = tk.StringVar(value="選択範囲: なし")
+        ttk.Label(bar, textvariable=self.var_selinfo, width=34).pack(side="left")
 
-        self.var_seg = tk.StringVar(value="")
-        ttk.Label(f, textvariable=self.var_seg, foreground="#666").grid(
-            row=1, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        self.btn_play = ttk.Button(bar, text="▶ 選択範囲を再生",
+                                   command=self.on_play, state="disabled")
+        self.btn_play.pack(side="left", padx=(8, 0))
+        self.btn_stop = ttk.Button(bar, text="■ 停止", command=self.player.stop,
+                                   state="disabled")
+        self.btn_stop.pack(side="left", padx=(4, 0))
+        ttk.Button(bar, text="表示を全体に戻す",
+                   command=self.wave.zoom_fit).pack(side="left", padx=(12, 0))
+        ttk.Label(bar, text="ホイールでズーム / クリックで行を選択",
+                  foreground="#888").pack(side="left", padx=(12, 0))
+        if not self.player.available():
+            ttk.Label(bar, text="(この環境では再生コマンドが見つかりません)",
+                      foreground="#a33").pack(side="left", padx=(12, 0))
 
     def _build_body(self):
         pane = ttk.PanedWindow(self, orient="horizontal")
-        pane.grid(row=3, column=0, sticky="nsew")
+        pane.grid(row=4, column=0, sticky="nsew")
 
-        # 左: 入力
+        # 左: 発話クリップの表と編集
         left = ttk.Frame(pane, padding=(0, 0, 6, 0))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(2, weight=1)
+        left.rowconfigure(1, weight=1)
 
         opt = ttk.Frame(left)
         opt.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         ttk.Label(opt, text="参照画像:").pack(side="left")
         self.var_nimg = tk.IntVar(value=2)
-        sp = ttk.Spinbox(opt, from_=1, to=9, width=4, textvariable=self.var_nimg,
-                         command=self.refresh_output)
-        sp.pack(side="left", padx=(4, 12))
+        ttk.Spinbox(opt, from_=1, to=9, width=4, textvariable=self.var_nimg,
+                    command=self._sync_outputs).pack(side="left", padx=(4, 12))
         ttk.Label(opt, text="言語タグ:").pack(side="left")
         self.var_lang = tk.StringVar(value="Japanese")
-        ttk.Combobox(opt, textvariable=self.var_lang, width=12, state="readonly",
-                     values=["Japanese", "English", "Chinese", "Korean"]).pack(
-            side="left", padx=(4, 0))
+        cb = ttk.Combobox(opt, textvariable=self.var_lang, width=12, state="readonly",
+                          values=["Japanese", "English", "Chinese", "Korean"])
+        cb.pack(side="left", padx=(4, 0))
+        cb.bind("<<ComboboxSelected>>", lambda e: self._apply_lang())
 
-        ttk.Label(left, text="台詞 (1 行 1 発話 / 「S2: …」で話者指定)").grid(
-            row=1, column=0, sticky="w")
-        self.txt_lines = tk.Text(left, height=10, wrap="word", undo=True)
-        self.txt_lines.grid(row=2, column=0, sticky="nsew")
-        self.txt_lines.bind("<KeyRelease>", lambda e: self.refresh_output())
+        cols = ("no", "start", "end", "spk", "text")
+        self.tree = ttk.Treeview(left, columns=cols, show="headings",
+                                 height=9, selectmode="browse")
+        for cid, label, w, anchor in (
+                ("no", "#", 32, "e"),
+                ("start", "開始", 84, "e"),
+                ("end", "終了", 84, "e"),
+                ("spk", "話者", 48, "center"),
+                ("text", "台詞", 380, "w")):
+            self.tree.heading(cid, text=label)
+            self.tree.column(cid, width=w, anchor=anchor, stretch=(cid == "text"))
+        self.tree.grid(row=1, column=0, sticky="nsew")
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        sb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
+        sb.grid(row=1, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=sb.set)
 
-        ttk.Button(left, text="この内容で出力を更新",
-                   command=self.refresh_output).grid(row=3, column=0,
-                                                     sticky="ew", pady=(6, 0))
+        edit = ttk.LabelFrame(left, text="行の追加 / 編集", padding=6)
+        edit.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        edit.columnconfigure(7, weight=1)
+
+        ttk.Label(edit, text="開始:").grid(row=0, column=0, sticky="e")
+        self.ent_start = ttk.Entry(edit, width=10)
+        self.ent_start.grid(row=0, column=1, padx=(2, 8))
+        ttk.Label(edit, text="終了:").grid(row=0, column=2, sticky="e")
+        self.ent_end = ttk.Entry(edit, width=10)
+        self.ent_end.grid(row=0, column=3, padx=(2, 8))
+        ttk.Label(edit, text="話者:").grid(row=0, column=4, sticky="e")
+        self.cmb_spk = ttk.Combobox(edit, width=5, values=["S1", "S2", "S3", "S4"])
+        self.cmb_spk.set("S1")
+        self.cmb_spk.grid(row=0, column=5, padx=(2, 8))
+        ttk.Label(edit, text="台詞:").grid(row=0, column=6, sticky="e")
+        self.ent_text = ttk.Entry(edit)
+        self.ent_text.grid(row=0, column=7, sticky="ew", padx=(2, 0))
+        self.ent_text.bind("<Return>", lambda e: self.on_row_add_or_update())
+
+        btns = ttk.Frame(edit)
+        btns.grid(row=1, column=0, columnspan=8, sticky="ew", pady=(6, 0))
+        ttk.Button(btns, text="＋ 選択範囲から行を追加",
+                   command=self.on_row_add).pack(side="left")
+        ttk.Button(btns, text="選択行を更新",
+                   command=self.on_row_update).pack(side="left", padx=(6, 0))
+        ttk.Button(btns, text="選択行を削除",
+                   command=self.on_row_delete).pack(side="left", padx=(6, 0))
+        ttk.Button(btns, text="全行削除",
+                   command=self.on_rows_clear).pack(side="left", padx=(6, 0))
+        ttk.Separator(btns, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(btns, text="自動検出を取り込む…",
+                   command=self.on_detect_import).pack(side="left")
+        ttk.Button(btns, text="台詞を一括貼り付け…",
+                   command=self.on_bulk_paste).pack(side="left", padx=(6, 0))
+
+        det = ttk.Frame(edit)
+        det.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(6, 0))
+        ttk.Label(det, text="自動検出のしきい値 (dB):").pack(side="left")
+        self.var_thresh = tk.DoubleVar(value=-40.0)
+        ttk.Scale(det, from_=-70, to=-15, variable=self.var_thresh,
+                  orient="horizontal", length=140,
+                  command=lambda e: self.var_thresh_lbl.set(
+                      f"{self.var_thresh.get():.0f}")).pack(side="left", padx=(4, 2))
+        self.var_thresh_lbl = tk.StringVar(value="-40")
+        ttk.Label(det, textvariable=self.var_thresh_lbl, width=4).pack(side="left")
+        ttk.Label(det, text="無音とみなす長さ (ms):").pack(side="left", padx=(10, 0))
+        self.var_sil = tk.IntVar(value=250)
+        ttk.Spinbox(det, from_=50, to=2000, increment=50, width=6,
+                    textvariable=self.var_sil).pack(side="left", padx=(4, 0))
+
         pane.add(left, weight=1)
 
         # 右: 出力
@@ -182,7 +518,7 @@ class App(ttk.Frame):
         t.columnconfigure(0, weight=1)
         t.rowconfigure(1, weight=3)
         t.rowconfigure(4, weight=3)
-        t.rowconfigure(6, weight=2)
+        t.rowconfigure(7, weight=2)
 
         ttk.Label(t, text="LLM の Ref2VA 出力を貼り付け:").grid(row=0, column=0, sticky="w")
         self.txt_llm = tk.Text(t, height=10, wrap="word", undo=True)
@@ -271,11 +607,12 @@ class App(ttk.Frame):
         nb.add(t, text="運用設定")
 
     def _build_status(self):
-        self.var_status = tk.StringVar(value="wav を開くか、タイムライン JSON を読み込んでください。")
+        self.var_status = tk.StringVar(
+            value="wav を開くか、タイムライン JSON を読み込んでください。")
         ttk.Label(self, textvariable=self.var_status, foreground="#444").grid(
-            row=4, column=0, sticky="w", pady=(6, 0))
+            row=5, column=0, sticky="w", pady=(6, 0))
 
-    # -- [A][B] 動作 (h3_audio_prompter.py を踏襲) ---------------------------
+    # -- wav / グリッド ------------------------------------------------------
 
     def on_open(self):
         path = filedialog.askopenfilename(
@@ -284,11 +621,17 @@ class App(ttk.Frame):
         if not path:
             return
         try:
-            self.samples, self.sr, self.n_ch = read_wav(path)
+            samples, sr, n_ch = read_wav(path)
         except Exception as exc:
             messagebox.showerror("読み込みエラー", str(exc))
             return
 
+        if self.utts and any(u.text for u in self.utts):
+            if not messagebox.askyesno(
+                    "確認", "入力済みの発話クリップを消して新しい wav を開きますか？"):
+                return
+
+        self.samples, self.sr, self.n_ch = samples, sr, n_ch
         self.wav_path = path
         self.loaded_tl = None
         dur = len(self.samples) / self.sr
@@ -310,8 +653,19 @@ class App(ttk.Frame):
                 break
         self._grid_cands = cands
         self.btn_pad["state"] = "normal"
+        self.btn_play["state"] = "normal" if self.player.available() else "disabled"
+        self.btn_stop["state"] = self.btn_play["state"]
 
-        self.on_detect()
+        self.wave.set_audio(self.samples, self.sr)
+
+        # 下書きとして自動検出を流し込む (台詞は空。あとで各行に入力する)
+        segs = self._detect()
+        self.utts = clips.from_segments(segs, self.var_lang.get())
+        self.sel_row = None
+        self._sync_all()
+        self.var_status.set(
+            f"自動検出で {len(segs)} 区間を下書きにしました。"
+            "各行を選んで再生し、台詞を入力してください。範囲は波形のドラッグで作り直せます。")
 
     def selected_grid(self):
         i = self.cmb_grid.current()
@@ -319,21 +673,19 @@ class App(ttk.Frame):
             return None
         return self._grid_cands[i]
 
-    def on_detect(self):
+    def _on_grid_change(self):
+        sel = self.selected_grid()
+        if sel:
+            self.wave.set_marker(sel[2])
+        self._sync_outputs()
+
+    def _detect(self):
         if self.samples is None:
-            return
-        self.segments = detect_segments(
+            return []
+        return detect_segments(
             self.samples, self.sr,
             thresh_db=float(self.var_thresh.get()),
             min_silence_ms=int(self.var_sil.get()))
-        if self.segments:
-            spans = ", ".join(f"{fmt_ts(a)}–{fmt_ts(b)}"
-                              for a, b in self.segments[:6])
-            more = " …" if len(self.segments) > 6 else ""
-            self.var_seg.set(f"{len(self.segments)} 区間: {spans}{more}")
-        else:
-            self.var_seg.set("区間が検出できませんでした。しきい値を上げてください。")
-        self.refresh_output()
 
     def on_pad(self):
         if self.samples is None:
@@ -374,37 +726,252 @@ class App(ttk.Frame):
             f"ComfyUI 側の Float (Duration) に {target:.3f} を入れ、\n"
             f"Load Audio (forced) にこのファイルを読み込ませてください。")
 
-    def refresh_output(self, *_):
+    # -- 波形イベント --------------------------------------------------------
+
+    def on_wave_range(self, a, b):
+        self.ent_start.delete(0, "end")
+        self.ent_start.insert(0, fmt_ts(a))
+        self.ent_end.delete(0, "end")
+        self.ent_end.insert(0, fmt_ts(b))
+        self.var_selinfo.set(
+            f"選択範囲: {fmt_ts(a)} – {fmt_ts(b)}  ({b - a:.3f} 秒)")
+
+    def on_wave_pick(self, t):
+        for u in self.utts:
+            if u.start is not None and u.end is not None and u.start <= t <= u.end:
+                self._select_row(u.index)
+                return
+
+    def on_play(self):
         if self.samples is None:
             return
-        sel = self.selected_grid()
-        if sel is None:
+        a = _parse_time_field(self.ent_start.get())
+        b = _parse_time_field(self.ent_end.get())
+        if a is None or b is None or b <= a:
+            self.var_status.set("再生する範囲を先に選択してください。")
             return
-        _, frames, target = sel
+        self.player.play(clips.slice_range(self.samples, self.sr, a, b), self.sr)
 
-        lines = parse_lines(self.txt_lines.get("1.0", "end"))
-        self.rows = build_timeline(self.segments, lines, self.var_lang.get())
-        n_img = int(self.var_nimg.get())
+    # -- 行の操作 ------------------------------------------------------------
 
-        note = ""
-        if len(lines) and len(self.segments) and len(lines) != len(self.segments):
-            note = (f"※ 台詞 {len(lines)} 行に対し検出区間 {len(self.segments)} 個。"
-                    "対応がずれている可能性があるので確認すること。")
-            self.var_status.set(
-                f"⚠ 台詞 {len(lines)} 行 / 検出区間 {len(self.segments)} 個 — "
-                "しきい値か行数を調整してください。")
+    def _edit_fields(self):
+        a = _parse_time_field(self.ent_start.get())
+        b = _parse_time_field(self.ent_end.get())
+        spk = (self.cmb_spk.get().strip() or "S1").upper()
+        txt = self.ent_text.get().strip()
+        return a, b, spk, txt
+
+    def on_row_add(self):
+        a, b, spk, txt = self._edit_fields()
+        if a is None or b is None or b <= a:
+            messagebox.showwarning(
+                "範囲がありません",
+                "先に波形をドラッグして範囲を選択してください\n"
+                "(開始・終了の欄に手入力もできます)。")
+            return
+        u = Utterance(0, a, b, spk, txt, self.var_lang.get())
+        self.utts.append(u)
+        clips.renumber(self.utts)
+        self.sel_row = u.index
+        self._sync_all()
+        self.ent_text.delete(0, "end")
+        self.wave.clear_selection()
+        self.var_status.set(
+            f"行 [{u.index}] を追加しました。" +
+            ("" if txt else " 台詞が未入力です。行を選んだまま入力して「選択行を更新」。"))
+
+    def on_row_update(self):
+        u = self._current_row()
+        if u is None:
+            messagebox.showwarning("行が未選択", "更新する行を表で選んでください。")
+            return
+        a, b, spk, txt = self._edit_fields()
+        if a is not None and b is not None and b > a:
+            u.start, u.end = a, b
+        u.speaker = spk
+        u.text = txt
+        clips.renumber(self.utts)
+        self.sel_row = u.index
+        self._sync_all()
+        self.var_status.set(f"行 [{u.index}] を更新しました。")
+
+    def on_row_add_or_update(self):
+        if self._current_row() is not None:
+            self.on_row_update()
         else:
+            self.on_row_add()
+
+    def on_row_delete(self):
+        u = self._current_row()
+        if u is None:
+            return
+        self.utts.remove(u)
+        clips.renumber(self.utts)
+        self.sel_row = None
+        self._sync_all()
+
+    def on_rows_clear(self):
+        if self.utts and not messagebox.askyesno("確認", "すべての行を削除しますか？"):
+            return
+        self.utts = []
+        self.sel_row = None
+        self._sync_all()
+
+    def on_detect_import(self):
+        if self.samples is None:
+            messagebox.showwarning("wav がありません", "先に wav を開いてください。")
+            return
+        segs = self._detect()
+        if not segs:
+            self.var_status.set("区間が検出できませんでした。しきい値を上げてください。")
+            return
+        if self.utts and any(u.text for u in self.utts):
+            if not messagebox.askyesno(
+                    "確認",
+                    f"検出した {len(segs)} 区間で現在の {len(self.utts)} 行を"
+                    "置き換えます (入力済みの台詞は消えます)。よろしいですか？"):
+                return
+        self.utts = clips.from_segments(segs, self.var_lang.get())
+        self.sel_row = None
+        self._sync_all()
+        self.var_status.set(f"{len(segs)} 区間を取り込みました。各行に台詞を入力してください。")
+
+    def on_bulk_paste(self):
+        dlg = BulkPasteDialog(self)
+        if dlg.result is None:
+            return
+        lines = parse_lines(dlg.result)
+        if not lines:
+            return
+        if not self.utts:
+            self.utts = [Utterance(i + 1, None, None, spk, txt, self.var_lang.get())
+                         for i, (spk, txt) in enumerate(lines)]
+            self._sync_all()
             self.var_status.set(
-                f"台詞 {len(lines)} 行 / 検出区間 {len(self.segments)} 個 — "
-                f"動画長 {target:.3f} 秒 ({frames} フレーム)")
+                f"{len(lines)} 行を台詞だけで作成しました。各行に範囲を割り当ててください。")
+            return
+        n = clips.distribute_lines(self.utts, lines)
+        self._sync_all()
+        note = ""
+        if len(lines) != len(self.utts):
+            note = f" (台詞 {len(lines)} 行 / 表 {len(self.utts)} 行 — 数が合っていません)"
+        self.var_status.set(f"{n} 行に台詞を流し込みました。{note}")
 
-        wav_name = os.path.basename(self.wav_path) if self.wav_path else "-"
-        sc = render_scaffold(self.rows, target, frames, wav_name, n_img, note)
-        pr = render_prompt_skeleton(self.rows, target, n_img)
+    def _current_row(self):
+        if self.sel_row is None:
+            return None
+        for u in self.utts:
+            if u.index == self.sel_row:
+                return u
+        return None
 
+    def _select_row(self, index):
+        self.sel_row = index
+        iid = str(index)
+        if self.tree.exists(iid):
+            self.tree.selection_set(iid)
+            self.tree.see(iid)
+        self._load_row_to_fields()
+        self.wave.set_rows(self.utts, self.sel_row)
+
+    def on_tree_select(self, _event):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        self.sel_row = int(sel[0])
+        self._load_row_to_fields()
+        self.wave.set_rows(self.utts, self.sel_row)
+
+    def _load_row_to_fields(self):
+        u = self._current_row()
+        if u is None:
+            return
+        self.ent_start.delete(0, "end")
+        self.ent_end.delete(0, "end")
+        if u.start is not None:
+            self.ent_start.insert(0, fmt_ts(u.start))
+        if u.end is not None:
+            self.ent_end.insert(0, fmt_ts(u.end))
+        self.cmb_spk.set(u.speaker)
+        self.ent_text.delete(0, "end")
+        self.ent_text.insert(0, u.text)
+        if u.start is not None and u.end is not None:
+            self.wave.set_selection(u.start, u.end)
+            self.var_selinfo.set(
+                f"選択範囲: {fmt_ts(u.start)} – {fmt_ts(u.end)}  (行 [{u.index}])")
+
+    def _apply_lang(self):
+        lang = self.var_lang.get()
+        for u in self.utts:
+            u.lang = lang
+        self._sync_outputs()
+
+    # -- 表・出力の同期 ------------------------------------------------------
+
+    def _sync_all(self):
+        clips.renumber(self.utts)
+        self._refresh_tree()
+        self.wave.set_rows(self.utts, self.sel_row)
+        self._sync_outputs()
+
+    def _refresh_tree(self):
+        self.tree.delete(*self.tree.get_children())
+        for u in self.utts:
+            self.tree.insert(
+                "", "end", iid=str(u.index),
+                values=(u.index,
+                        fmt_ts(u.start) if u.start is not None else "—",
+                        fmt_ts(u.end) if u.end is not None else "—",
+                        u.speaker,
+                        u.text or "(未入力)"))
+        if self.sel_row is not None and self.tree.exists(str(self.sel_row)):
+            self.tree.selection_set(str(self.sel_row))
+
+    def _totals(self):
+        """(total_sec, frames) — wav があればグリッド選択、なければ JSON の値。"""
+        if self.samples is not None:
+            sel = self.selected_grid()
+            if sel is None:
+                return None
+            return sel[2], sel[1]
+        if self.loaded_tl is not None:
+            return self.loaded_tl.total_sec, self.loaded_tl.frames
+        return None
+
+    def _sync_outputs(self, *_):
+        totals = self._totals()
+        if totals is None:
+            return
+        total, frames = totals
+        if self.samples is not None:
+            self.wave.set_marker(total)
+        n_img = int(self.var_nimg.get())
+        wav_name = os.path.basename(self.wav_path) if self.wav_path else (
+            os.path.basename(self.loaded_tl.wav_path)
+            if self.loaded_tl and self.loaded_tl.wav_path else "-")
+
+        n_empty = sum(1 for u in self.utts if u.start is not None and not u.text)
+        n_norange = sum(1 for u in self.utts if u.start is None)
+        note = ""
+        if n_empty or n_norange:
+            parts = []
+            if n_empty:
+                parts.append(f"台詞未入力 {n_empty} 行")
+            if n_norange:
+                parts.append(f"範囲未設定 {n_norange} 行")
+            note = "※ " + " / ".join(parts) + " が残っている。埋めてから使うこと。"
+
+        sc = render_scaffold(self.utts, total, frames, wav_name, n_img, note)
+        pr = render_prompt_skeleton(self.utts, total, n_img)
         for widget, text in ((self.out_scaffold, sc), (self.out_prompt, pr)):
             widget.delete("1.0", "end")
             widget.insert("1.0", text)
+
+        done = sum(1 for u in self.utts if u.usable())
+        self.var_status.set(
+            f"発話 {len(self.utts)} 行 (入力済み {done}) — "
+            f"動画長 {total:.3f} 秒 ({frames} フレーム)"
+            + (f"  {note}" if note else ""))
 
     def copy(self, widget):
         text = widget.get("1.0", "end-1c")
@@ -415,24 +982,20 @@ class App(ttk.Frame):
     # -- タイムラインの保存 / 読込 -------------------------------------------
 
     def current_timeline(self):
-        """[C][D] が使う現在のタイムライン。wav 実測を優先、無ければ JSON。"""
-        if self.samples is not None:
-            sel = self.selected_grid()
-            if sel is None:
-                return None
-            _, frames, target = sel
-            lines = parse_lines(self.txt_lines.get("1.0", "end"))
-            rows = build_timeline(self.segments, lines, self.var_lang.get())
-            return Timeline(utterances=rows, total_sec=target, frames=frames,
-                            wav_path=self.wav_path or "",
-                            n_images=int(self.var_nimg.get()))
-        return self.loaded_tl
+        totals = self._totals()
+        if totals is None:
+            return None
+        total, frames = totals
+        clips.renumber(self.utts)
+        wav_path = self.wav_path or (self.loaded_tl.wav_path if self.loaded_tl else "")
+        return Timeline(utterances=list(self.utts), total_sec=total, frames=frames,
+                        wav_path=wav_path, n_images=int(self.var_nimg.get()))
 
     def on_save_tl(self):
         tl = self.current_timeline()
         if tl is None:
             messagebox.showwarning("タイムラインなし",
-                                   "先に wav を開いて台詞を入力してください。")
+                                   "先に wav を開いて発話クリップを作ってください。")
             return
         path = filedialog.asksaveasfilename(
             title="タイムラインを保存", defaultextension=".json",
@@ -455,11 +1018,15 @@ class App(ttk.Frame):
             return
         self.loaded_tl = tl
         self.samples = None
-        self.segments = [(u.start, u.end) for u in tl.utterances
-                         if u.start is not None]
+        self.wav_path = None
+        self.utts = list(tl.utterances)
+        self.sel_row = None
         self.btn_pad["state"] = "disabled"
+        self.btn_play["state"] = "disabled"
+        self.btn_stop["state"] = "disabled"
         self.cmb_grid["values"] = []
         self.cmb_grid.set(f"{tl.total_sec:.3f} 秒 / {tl.frames} フレーム (JSON から)")
+        self.wave.clear_audio()
         self.var_path.set(f"(JSON) {os.path.basename(path)}")
         self.var_info.set(
             f"動画長 {tl.total_sec:.3f} 秒 / {tl.frames} フレーム / "
@@ -467,19 +1034,9 @@ class App(ttk.Frame):
         self.var_nimg.set(tl.n_images)
         if tl.utterances:
             self.var_lang.set(tl.utterances[0].lang)
-        self.txt_lines.delete("1.0", "end")
-        self.txt_lines.insert("1.0", "\n".join(
-            f"{u.speaker}: {u.text}" if u.speaker != "S1" else u.text
-            for u in tl.utterances if u.text))
-        wav_name = os.path.basename(tl.wav_path) if tl.wav_path else "-"
-        sc = render_scaffold(tl.utterances, tl.total_sec, tl.frames,
-                             wav_name, tl.n_images, "")
-        pr = render_prompt_skeleton(tl.utterances, tl.total_sec, tl.n_images)
-        for widget, text in ((self.out_scaffold, sc), (self.out_prompt, pr)):
-            widget.delete("1.0", "end")
-            widget.insert("1.0", text)
+        self._sync_all()
         self.var_status.set(
-            "タイムラインを読み込みました。wav なしのため再検出はできません。")
+            "タイムラインを読み込みました。wav が無いため波形と再生は使えません。")
 
     # -- [C] 差し替え --------------------------------------------------------
 
@@ -487,7 +1044,8 @@ class App(ttk.Frame):
         tl = self.current_timeline()
         if tl is None:
             messagebox.showwarning("タイムラインなし",
-                                   "先に wav (またはタイムライン JSON) と台詞を用意してください。")
+                                   "先に wav (またはタイムライン JSON) と発話クリップを"
+                                   "用意してください。")
             return
         text = self.txt_llm.get("1.0", "end-1c")
         if not text.strip():
@@ -579,6 +1137,40 @@ class App(ttk.Frame):
             out = "(タイムラインなし: 書式チェックのみ)\n" + out
         self.txt_cmpres.delete("1.0", "end")
         self.txt_cmpres.insert("1.0", out)
+
+
+class BulkPasteDialog(tk.Toplevel):
+    """台詞を 1 行 1 発話でまとめて貼り付ける (行の並び順に流し込む)。"""
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("台詞を一括貼り付け")
+        self.result = None
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        ttk.Label(self, justify="left", text=(
+            "1 行 1 発話。「S2: …」で話者を指定できます。\n"
+            "表の行の並び順 (開始時刻順) に上から流し込みます。")).grid(
+            row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+        self.txt = tk.Text(self, width=70, height=14, wrap="word")
+        self.txt.grid(row=1, column=0, sticky="nsew", padx=8)
+
+        bar = ttk.Frame(self)
+        bar.grid(row=2, column=0, sticky="e", padx=8, pady=8)
+        ttk.Button(bar, text="流し込む", command=self.on_ok).pack(side="left")
+        ttk.Button(bar, text="キャンセル", command=self.destroy).pack(
+            side="left", padx=(6, 0))
+
+        self.transient(master)
+        self.grab_set()
+        self.wait_window()
+
+    def on_ok(self):
+        text = self.txt.get("1.0", "end-1c")
+        if text.strip():
+            self.result = text
+        self.destroy()
 
 
 class PasteDialog(tk.Toplevel):
@@ -696,11 +1288,9 @@ class MappingDialog(tk.Toplevel):
         return out
 
     def on_ok(self):
-        n = len(self.res.utterances)
         ts_map = self._collect(self.ts_boxes) if self.ts_boxes else None
         d_map = self._collect(self.d_boxes) if self.d_boxes else None
-        for m, occs, label in ((ts_map, self.res.at_occs, "At 時刻"),
-                               (d_map, self.res.d_occs, "<d>")):
+        for m, label in ((ts_map, "At 時刻"), (d_map, "<d>")):
             if m is None:
                 continue
             picked = [v for v in m if v != 0]
@@ -715,12 +1305,18 @@ class MappingDialog(tk.Toplevel):
 def main():
     root = tk.Tk()
     root.title(APP_TITLE)
-    root.geometry("1280x860")
+    root.geometry("1360x900")
     try:
         ttk.Style().theme_use("clam")
     except tk.TclError:
         pass
-    App(root)
+    app = App(root)
+
+    def on_close():
+        app.player.close()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
     root.mainloop()
 
 
