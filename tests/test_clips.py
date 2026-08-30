@@ -126,6 +126,37 @@ class TestPlayer(unittest.TestCase):
         p.stop()   # 何も再生していなくても安全
         p.close()
 
+    def test_play_writes_tmp_wav_via_command(self):
+        # サブプロセス経路: コマンドを 'true' に差し替えて配線だけ検証する
+        p = clips.Player()
+        p._use_winsound = False
+        p._cmd_name, p._cmd_build = "true", (lambda path: ["true", path])
+        sig = np.zeros(2400, dtype=np.float32)
+        p.play(sig, 24000)
+        self.assertIsNotNone(p._tmp)
+        with open(p._tmp, "rb") as fh:
+            head = fh.read(12)
+        self.assertEqual(head[:4], b"RIFF")
+        self.assertEqual(head[8:12], b"WAVE")
+        first = p._tmp
+        # 2 回目の再生で同じ一時ファイルに上書きされる
+        p.play(np.zeros(1200, dtype=np.float32), 24000)
+        self.assertEqual(p._tmp, first)
+        import os
+        size = os.path.getsize(p._tmp)
+        self.assertEqual(size, 44 + 1200 * 2)   # ヘッダ + 16bit PCM
+        p.stop()
+        p.close()
+        self.assertFalse(os.path.exists(first))
+
+    def test_play_without_backend_is_noop(self):
+        p = clips.Player()
+        p._use_winsound = False
+        p._cmd_name, p._cmd_build = None, None
+        p.play(np.zeros(100, dtype=np.float32), 8000)
+        self.assertIsNone(p._tmp)
+        p.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -150,25 +150,41 @@ class Player:
     def backend(self) -> str:
         return self._cmd_name or "なし"
 
-    def play(self, samples, sr):
-        """mono float32 の切り出し済み範囲を非同期再生する。"""
-        self.stop()
-        if len(samples) == 0:
-            return
-        data = wav_bytes_pcm16(samples, sr)
-        if self._use_winsound:
-            import winsound
-            winsound.PlaySound(data, winsound.SND_MEMORY | winsound.SND_ASYNC)
-            return
-        if self._cmd_build is None:
-            return
+    def _write_tmp(self, data) -> str:
+        """再生用の一時 wav を書く。ロック等で書けなければ別ファイルに切り替える。"""
         if self._tmp is None:
             fd, self._tmp = tempfile.mkstemp(prefix="h3_preview_", suffix=".wav")
             os.close(fd)
-        with open(self._tmp, "wb") as fh:
-            fh.write(data)
+        try:
+            with open(self._tmp, "wb") as fh:
+                fh.write(data)
+        except OSError:
+            fd, self._tmp = tempfile.mkstemp(prefix="h3_preview_", suffix=".wav")
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+        return self._tmp
+
+    def play(self, samples, sr):
+        """mono float32 の切り出し済み範囲を非同期再生する。"""
+        self.stop()
+        if len(samples) == 0 or not self.available():
+            return
+        data = wav_bytes_pcm16(samples, sr)
+        path = self._write_tmp(data)
+        if self._use_winsound:
+            # winsound は SND_MEMORY と SND_ASYNC を併用できない
+            # (RuntimeError: Cannot play asynchronously from memory) ので、
+            # 一時ファイル経由で非同期再生する。stop() が先に SND_PURGE で
+            # 前の再生を止めているのでファイルの上書きは安全。
+            import winsound
+            winsound.PlaySound(
+                path,
+                winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            return
+        if self._cmd_build is None:
+            return
         self._proc = subprocess.Popen(
-            self._cmd_build(self._tmp),
+            self._cmd_build(path),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def stop(self):
