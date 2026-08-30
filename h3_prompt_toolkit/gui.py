@@ -16,11 +16,12 @@ import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from .grid import FPS, grid_candidates
+from .grid import FPS, grid_candidates, comfy_float_hint
 from .audio import read_wav, read_wav_raw_stereo, write_wav_pcm16, pad_to_seconds
 from .segments import detect_segments
 from .timeline import (Timeline, Utterance, parse_lines, parse_ts, fmt_ts)
-from .scaffold import render_scaffold, render_prompt_skeleton, render_settings_note
+from .scaffold import (render_scaffold, render_prompt_skeleton,
+                       render_settings_note, render_duration_note)
 from .substitute import substitute
 from .validate import validate, render_report
 from .compare import compare_outputs, render_table, render_details
@@ -753,14 +754,27 @@ class App(ttk.Frame):
         except Exception as exc:
             messagebox.showerror("書き出しエラー", str(exc))
             return
+        # 貼り付け用の数値を同名の .txt に併記する
+        note_path = f"{base}_{frames}f.txt"
+        try:
+            with open(note_path, "w", encoding="utf-8") as fh:
+                fh.write(render_duration_note(os.path.basename(dst), frames) + "\n")
+        except OSError:
+            note_path = None
+        hint = comfy_float_hint(frames)
         self.var_status.set(
             f"書き出し: {os.path.basename(dst)}  "
-            f"({target:.3f} 秒 / {frames} フレーム / 16bit PCM)")
+            f"({target:.3f} 秒 / {frames} フレーム / 16bit PCM) — "
+            f"Duration: {target:.3f} (1桁なら {hint:.1f})")
         messagebox.showinfo(
             "完了",
             f"{os.path.basename(dst)} を書き出しました。\n\n"
-            f"ComfyUI 側の Float (Duration) に {target:.3f} を入れ、\n"
-            f"Load Audio (forced) にこのファイルを読み込ませてください。")
+            f"Load Audio (forced) にこのファイルを読み込ませ、\n"
+            f"ComfyUI 側の Float (Duration) に {target:.3f} を入れてください。\n"
+            f"Float が小数第 1 位までしか受けない場合は {hint:.1f} で同じ\n"
+            f"{frames} フレームに丸まります。\n\n"
+            + (f"この数値は {os.path.basename(note_path)} にも書き出しました。"
+               if note_path else ""))
 
     # -- 波形イベント --------------------------------------------------------
 

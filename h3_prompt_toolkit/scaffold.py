@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from .grid import FPS
+from .grid import FPS, comfy_float_hint
 from .timeline import fmt_ts, Timeline
 
 # ComfyUI 側の設定と食い違うと事故になるので、ツール側に持たせて出力に併記する。
@@ -103,6 +103,28 @@ def render_scaffold_from_timeline(tl: Timeline, wav_name: str, mode_note: str = 
 
 def render_skeleton_from_timeline(tl: Timeline):
     return render_prompt_skeleton(tl.utterances, tl.total_sec, tl.n_images)
+
+
+def render_duration_note(wav_name: str, frames: int) -> str:
+    """パディング済み wav に添える、ComfyUI へ貼り付ける数値のメモ。
+
+    公式テンプレートの Float (Duration) → Math Expression (17k+5 へ切り上げ)
+    → length という配線を前提に、正確な秒数と、Float ウィジェットが
+    小数第 1 位までしか受けない場合の安全値 (切り捨て 1 桁) を併記する。
+    """
+    exact = frames / FPS
+    hint = comfy_float_hint(frames)
+    return "\n".join([
+        f"音声ファイル: {wav_name}",
+        f"動画長: {exact:.3f} 秒 = {frames} フレーム @ {FPS}fps",
+        "",
+        f"ComfyUI の Float (Duration) に入れる値: {exact:.3f}",
+        f"  小数第 1 位までしか入らない場合:      {hint:.1f}",
+        f"  (どちらもテンプレートの Math Expression が {frames} フレームに丸め上げる)",
+        "",
+        "length を直接入力するワークフローの場合は、秒ではなく"
+        f"フレーム数 {frames} を入れること。",
+    ])
 
 
 def render_settings_note(settings: dict | None = None) -> str:

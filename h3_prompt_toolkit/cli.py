@@ -22,10 +22,11 @@ import argparse
 import os
 import sys
 
-from .grid import FPS, snap_up, grid_candidates, grid_frames, grid_seconds
+from .grid import (FPS, snap_up, grid_candidates, grid_frames, grid_seconds,
+                   comfy_float_hint)
 from .timeline import Timeline, build_timeline, parse_lines, fmt_ts, DEFAULT_LANG
 from .scaffold import (render_scaffold_from_timeline, render_skeleton_from_timeline,
-                       render_settings_note)
+                       render_settings_note, render_duration_note)
 from .substitute import substitute
 from .validate import validate, render_report, counts
 from .compare import compare_outputs, render_table, render_details
@@ -165,8 +166,14 @@ def cmd_pad(args):
     base, _ext = os.path.splitext(args.wav)
     dst = args.out or f"{base}_{frames}f.wav"
     write_wav_pcm16(dst, out, sr)
+    note = render_duration_note(os.path.basename(dst), frames)
+    note_path = os.path.splitext(dst)[0] + ".txt"
+    with open(note_path, "w", encoding="utf-8") as fh:
+        fh.write(note + "\n")
     _err(f"書き出し: {dst}  ({target:.3f} 秒 / {frames} フレーム / 16bit PCM)")
-    _err(f"ComfyUI 側の Float (Duration) に {target:.3f} を入れてください。")
+    _err(f"貼り付け用の数値: {note_path}")
+    _err("")
+    _err(note)
     return 0
 
 
