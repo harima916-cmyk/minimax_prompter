@@ -26,7 +26,8 @@ from .grid import (FPS, snap_up, grid_candidates, grid_frames, grid_seconds,
                    comfy_float_hint)
 from .timeline import Timeline, build_timeline, parse_lines, fmt_ts, DEFAULT_LANG
 from .scaffold import (render_scaffold_from_timeline, render_skeleton_from_timeline,
-                       render_settings_note, render_duration_note)
+                       render_reference_header, render_settings_note,
+                       render_duration_note)
 from .substitute import substitute
 from .validate import validate, render_report, counts
 from .compare import compare_outputs, render_table, render_details
@@ -186,9 +187,20 @@ def cmd_scaffold(args):
     if n_lin and n_seg and n_lin != n_seg:
         note = (f"※ 台詞 {n_lin} 行に対し検出区間 {n_seg} 個。"
                 "対応がずれている可能性があるので確認すること。")
-    print(render_scaffold_from_timeline(tl, wav_name, note))
+
+    # 参照の説明: コマンドライン指定 > タイムライン JSON に保存された値
+    saved = tl.ref_texts or {}
+    pics = list(args.pic_desc or saved.get("pictures") or [])
+    audio = args.audio_desc or saved.get("audio") or ""
+    if pics or audio:
+        pics += [""] * (tl.n_images - len(pics))
+        print(render_reference_header(pics[:tl.n_images], audio))
+        print()
+
+    print(render_scaffold_from_timeline(tl, wav_name, note,
+                                        out_lang=args.out_lang))
     print()
-    print(render_skeleton_from_timeline(tl))
+    print(render_skeleton_from_timeline(tl, out_lang=args.out_lang))
     _err("")
     _err(render_settings_note())
     return 0
@@ -279,6 +291,11 @@ def build_parser():
 
     s = sub.add_parser("scaffold", help="[B] LLM に渡す固定枠と骨組みを生成する")
     _add_source_args(s)
+    s.add_argument("--out-lang", choices=("en", "ja"), default="en",
+                   help="LLM 向けテキストの言語 (既定 en。台詞は言語タグのまま)")
+    s.add_argument("--pic-desc", action="append", metavar="TEXT",
+                   help="参照画像の説明 (画像の枚数だけ繰り返し指定)")
+    s.add_argument("--audio-desc", metavar="TEXT", help="<Audio 1> の説明")
     s.set_defaults(func=cmd_scaffold)
 
     c = sub.add_parser("substitute", help="[C] LLM 出力の時刻と台詞を実測値に差し替える")

@@ -83,12 +83,31 @@ class TestCli(unittest.TestCase):
         self.assertIn("3.7", err)
 
     def test_scaffold_from_timeline(self):
+        # 既定は英語 (LLM も H3 も英語前提)。台詞はそのまま
         code, out, err = run_cli("scaffold", "--timeline", self.tl_json)
         self.assertEqual(code, 0)
-        self.assertIn("=== 固定情報 / 変更禁止 ===", out)
+        self.assertIn("=== FIXED FACTS / DO NOT CHANGE ===", out)
         self.assertIn("subject_definitions:", out)
         self.assertIn("<d>[Japanese] こんにちは、今日はいい天気ですね。</d>", out)
         self.assertIn("運用設定", err)
+
+    def test_scaffold_japanese_option(self):
+        code, out, _ = run_cli("scaffold", "--timeline", self.tl_json,
+                               "--out-lang", "ja")
+        self.assertEqual(code, 0)
+        self.assertIn("=== 固定情報 / 変更禁止 ===", out)
+
+    def test_scaffold_reference_header(self):
+        code, out, _ = run_cli("scaffold", "--timeline", self.tl_json,
+                               "--pic-desc", "the singer",
+                               "--pic-desc", "the stage",
+                               "--audio-desc", "her voice")
+        self.assertEqual(code, 0)
+        self.assertIn("<Picture 1> is the singer.", out)
+        self.assertIn("<Picture 2> is the stage.", out)
+        self.assertIn("<Audio 1> is her voice.", out)
+        # ヘッダは固定枠より前に出る
+        self.assertLess(out.index("<Picture 1> is"), out.index("FIXED FACTS"))
 
     def test_substitute_ok(self):
         src = os.path.join(self.dir, "llm.txt")
