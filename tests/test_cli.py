@@ -70,6 +70,17 @@ class TestCli(unittest.TestCase):
         self.assertEqual(code, 0)
         made = [f for f in os.listdir(self.dir) if f.endswith("f.wav")]
         self.assertEqual(len(made), 1)
+        # 貼り付け用の数値がサイドカー txt に書き出される
+        notes = [f for f in os.listdir(self.dir) if f.endswith("f.txt")]
+        self.assertEqual(len(notes), 1)
+        with open(os.path.join(self.dir, notes[0]), encoding="utf-8") as fh:
+            note = fh.read()
+        # 3.2 秒 → 90 フレーム = 3.750 秒。1 桁制限時の安全値は 3.7
+        self.assertIn("90 フレーム", note)
+        self.assertIn("3.750", note)
+        self.assertIn("3.7", note)
+        self.assertIn("Float (Duration)", note)
+        self.assertIn("3.7", err)
 
     def test_scaffold_from_timeline(self):
         code, out, err = run_cli("scaffold", "--timeline", self.tl_json)

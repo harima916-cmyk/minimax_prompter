@@ -54,6 +54,12 @@ python -m h3_prompt_toolkit
 Linux は paplay / aplay / ffplay のいずれかがあれば使われる (無ければ再生
 ボタンだけ無効になり、他の機能はそのまま使える)。
 
+「パディング済み wav を書き出す」は、wav と同じ場所に **`〇〇_141f.txt`**
+(貼り付け用メモ) も書き出す。ComfyUI の Float (Duration) に入れる秒数と、
+Float ウィジェットが小数第 1 位までしか受けない場合の安全値
+(切り捨て 1 桁。公式テンプレートの Math Expression が同じフレーム数に
+丸め上げることを保証した値)、length 直接入力用のフレーム数が書いてある。
+
 ### CLI (バッチ)
 
 ```bash
