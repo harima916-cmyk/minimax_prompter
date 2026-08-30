@@ -1120,10 +1120,29 @@ class App(ttk.Frame):
         if not text.strip():
             messagebox.showwarning("入力なし", "LLM の出力を貼り付けてください。")
             return
+        if not tl.usable_utterances():
+            messagebox.showwarning(
+                "発話クリップがありません",
+                "左の表に「範囲と台詞が揃った行」が 1 つもありません。\n"
+                "wav を開いてクリップを作るか、保存済みのタイムライン JSON を\n"
+                "読み込んでから、もう一度実行してください。")
+            return
         res = substitute(text, tl,
                          snap_shots=self.var_snap.get(),
                          force_na=not self.var_keepna.get())
         if res.needs_mapping:
+            if not res.at_occs and not res.d_occs:
+                self._show_subst(res)
+                messagebox.showwarning(
+                    "差し替えの手がかりがありません",
+                    "LLM 出力の detailed_description に \"At M:SS.mmm\" 形式の\n"
+                    "時刻も <d> タグの台詞も見つかりませんでした。\n\n"
+                    "Auto-Prompter が Ref2VA 形式 (REF2V モード) で出力しているか\n"
+                    "確認し、シードを変えて生成し直してください。\n"
+                    "プロンプト側の骨組み ([ ] を置き換える形式) を守らせるのが確実です。")
+                self.var_status.set(
+                    "差し替えできませんでした (出力に At 時刻 / <d> が見つからない)。")
+                return
             maps = MappingDialog(self, res).result
             if maps is None:
                 self._show_subst(res)
@@ -1297,11 +1316,16 @@ class MappingDialog(tk.Toplevel):
         need_ts = len(res.at_occs) != len(utts)
         need_d = len(res.d_occs) != len(utts)
 
-        ttk.Label(self, text=(
-            "検出された出現と実測の発話の個数が食い違っています。\n"
-            "発話ごとに、どの出現を置き換えるかを選んでください。"),
-            justify="left").grid(row=0, column=0, columnspan=3,
-                                 sticky="w", padx=8, pady=8)
+        head = ("検出された出現と実測の発話の個数が食い違っています。\n"
+                "発話ごとに、どの出現を置き換えるかを選んでください。")
+        if need_ts and not res.at_occs:
+            head += ("\n⚠ \"At M:SS.mmm\" 形式の時刻が出力に 1 つもありません。"
+                     "時刻は置換できないため、再生成を推奨します。")
+        if need_d and not res.d_occs:
+            head += ("\n⚠ <d> タグの台詞が出力に 1 つもありません。"
+                     "台詞は置換できないため、再生成を推奨します。")
+        ttk.Label(self, text=head, justify="left").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=8, pady=8)
 
         frame = ttk.Frame(self)
         frame.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=8)
