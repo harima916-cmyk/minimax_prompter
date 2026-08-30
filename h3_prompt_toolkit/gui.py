@@ -530,7 +530,7 @@ class App(ttk.Frame):
         nb.grid(row=0, column=0, sticky="nsew")
         self.nb = nb
 
-        self.out_scaffold = self._text_tab(nb, "LLM に渡す固定枠")
+        self.out_scaffold = self._build_scaffold_tab(nb)
         self.out_prompt = self._text_tab(nb, "プロンプト骨組み")
         self._build_substitute_tab(nb)
         self._build_validate_tab(nb)
@@ -549,6 +549,39 @@ class App(ttk.Frame):
             row=1, column=0, sticky="ew")
         nb.add(t, text=title)
         return w
+
+    def _build_scaffold_tab(self, nb):
+        t = ttk.Frame(nb)
+        t.columnconfigure(0, weight=1)
+        t.columnconfigure(1, weight=1)
+        t.rowconfigure(0, weight=1)
+        w = tk.Text(t, wrap="word", undo=True)
+        w.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        ttk.Button(t, text="固定枠＋骨組みをまとめてコピー (LLM 貼り付け用)",
+                   command=self.copy_scaffold_with_skeleton).grid(
+            row=1, column=0, sticky="ew")
+        ttk.Button(t, text="固定枠のみコピー", command=lambda: self.copy(w)).grid(
+            row=1, column=1, sticky="ew")
+        nb.add(t, text="LLM に渡す固定枠")
+        return w
+
+    def copy_scaffold_with_skeleton(self):
+        """LLM に貼るひとかたまり (固定枠 + 骨組み) をコピーする。
+
+        固定枠は「以下の骨組みの [ ] を置き換える形で出力する」と指示して
+        いるため、骨組みまで含めて渡すのが正しい使い方。骨組みには発話
+        1 つにつき 1 行の <d> が入っているので、話数も保たれやすい。
+        """
+        sc = self.out_scaffold.get("1.0", "end-1c")
+        pr = self.out_prompt.get("1.0", "end-1c")
+        if not sc.strip():
+            messagebox.showwarning("出力がありません",
+                                   "先に wav (またはタイムライン) を読み込んでください。")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(sc + "\n\n" + pr)
+        self.var_status.set(
+            "固定枠と骨組みをまとめてコピーしました。参照の説明行に続けて貼り付けてください。")
 
     def _build_substitute_tab(self, nb):
         t = ttk.Frame(nb, padding=4)
@@ -1120,10 +1153,29 @@ class App(ttk.Frame):
         if not text.strip():
             messagebox.showwarning("入力なし", "LLM の出力を貼り付けてください。")
             return
+        if not tl.usable_utterances():
+            messagebox.showwarning(
+                "発話クリップがありません",
+                "左の表に「範囲と台詞が揃った行」が 1 つもありません。\n"
+                "wav を開いてクリップを作るか、保存済みのタイムライン JSON を\n"
+                "読み込んでから、もう一度実行してください。")
+            return
         res = substitute(text, tl,
                          snap_shots=self.var_snap.get(),
                          force_na=not self.var_keepna.get())
         if res.needs_mapping:
+            if not res.at_occs and not res.d_occs:
+                self._show_subst(res)
+                messagebox.showwarning(
+                    "差し替えの手がかりがありません",
+                    "LLM 出力の detailed_description に \"At M:SS.mmm\" 形式の\n"
+                    "時刻も <d> タグの台詞も見つかりませんでした。\n\n"
+                    "Auto-Prompter が Ref2VA 形式 (REF2V モード) で出力しているか\n"
+                    "確認し、シードを変えて生成し直してください。\n"
+                    "プロンプト側の骨組み ([ ] を置き換える形式) を守らせるのが確実です。")
+                self.var_status.set(
+                    "差し替えできませんでした (出力に At 時刻 / <d> が見つからない)。")
+                return
             maps = MappingDialog(self, res).result
             if maps is None:
                 self._show_subst(res)
@@ -1297,11 +1349,16 @@ class MappingDialog(tk.Toplevel):
         need_ts = len(res.at_occs) != len(utts)
         need_d = len(res.d_occs) != len(utts)
 
-        ttk.Label(self, text=(
-            "検出された出現と実測の発話の個数が食い違っています。\n"
-            "発話ごとに、どの出現を置き換えるかを選んでください。"),
-            justify="left").grid(row=0, column=0, columnspan=3,
-                                 sticky="w", padx=8, pady=8)
+        head = ("検出された出現と実測の発話の個数が食い違っています。\n"
+                "発話ごとに、どの出現を置き換えるかを選んでください。")
+        if need_ts and not res.at_occs:
+            head += ("\n⚠ \"At M:SS.mmm\" 形式の時刻が出力に 1 つもありません。"
+                     "時刻は置換できないため、再生成を推奨します。")
+        if need_d and not res.d_occs:
+            head += ("\n⚠ <d> タグの台詞が出力に 1 つもありません。"
+                     "台詞は置換できないため、再生成を推奨します。")
+        ttk.Label(self, text=head, justify="left").grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=8, pady=8)
 
         frame = ttk.Frame(self)
         frame.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=8)
