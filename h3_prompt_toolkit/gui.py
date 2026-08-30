@@ -20,8 +20,10 @@ from .grid import FPS, grid_candidates, comfy_float_hint
 from .audio import read_wav, read_wav_raw_stereo, write_wav_pcm16, pad_to_seconds
 from .segments import detect_segments
 from .timeline import (Timeline, Utterance, parse_lines, parse_ts, fmt_ts)
-from .scaffold import (render_scaffold, render_prompt_skeleton,
-                       render_settings_note, render_duration_note)
+from .scaffold import (render_scaffold_for_llm, render_skeleton_for_llm,
+                       render_reference_header, render_settings_note,
+                       render_duration_note,
+                       DEFAULT_PIC1_DESC, DEFAULT_PIC_DESC, DEFAULT_AUDIO_DESC)
 from .substitute import substitute
 from .validate import validate, render_report
 from .compare import compare_outputs, render_table, render_details
@@ -448,6 +450,12 @@ class App(ttk.Frame):
                           values=["Japanese", "English", "Chinese", "Korean"])
         cb.pack(side="left", padx=(4, 0))
         cb.bind("<<ComboboxSelected>>", lambda e: self._apply_lang())
+        ttk.Label(opt, text="LLM向け:").pack(side="left", padx=(12, 0))
+        self.var_outlang = tk.StringVar(value="English")
+        cb2 = ttk.Combobox(opt, textvariable=self.var_outlang, width=8,
+                           state="readonly", values=["English", "日本語"])
+        cb2.pack(side="left", padx=(4, 0))
+        cb2.bind("<<ComboboxSelected>>", lambda e: self._sync_outputs())
 
         cols = ("no", "start", "end", "spk", "text")
         self.tree = ttk.Treeview(left, columns=cols, show="headings",
@@ -554,23 +562,61 @@ class App(ttk.Frame):
         t = ttk.Frame(nb)
         t.columnconfigure(0, weight=1)
         t.columnconfigure(1, weight=1)
-        t.rowconfigure(0, weight=1)
+        t.rowconfigure(1, weight=1)
+
+        self.refs_frame = ttk.LabelFrame(
+            t, text="参照の説明 (コピーの先頭に入る。英語で簡潔に)", padding=4)
+        self.refs_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.refs_frame.columnconfigure(1, weight=1)
+        self.ref_pic_vars = []
+        self.ref_audio_var = tk.StringVar(value=DEFAULT_AUDIO_DESC)
+        self._ref_count = 0
+        self._rebuild_ref_entries()
+
         w = tk.Text(t, wrap="word", undo=True)
-        w.grid(row=0, column=0, columnspan=2, sticky="nsew")
-        ttk.Button(t, text="固定枠＋骨組みをまとめてコピー (LLM 貼り付け用)",
+        w.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        ttk.Button(t, text="参照の説明＋固定枠＋骨組みをまとめてコピー (LLM 貼り付け用)",
                    command=self.copy_scaffold_with_skeleton).grid(
-            row=1, column=0, sticky="ew")
+            row=2, column=0, sticky="ew")
         ttk.Button(t, text="固定枠のみコピー", command=lambda: self.copy(w)).grid(
-            row=1, column=1, sticky="ew")
+            row=2, column=1, sticky="ew")
         nb.add(t, text="LLM に渡す固定枠")
         return w
 
-    def copy_scaffold_with_skeleton(self):
-        """LLM に貼るひとかたまり (固定枠 + 骨組み) をコピーする。
+    def _rebuild_ref_entries(self):
+        """参照画像の枚数に合わせて説明の入力欄を作り直す (入力値は保持)。"""
+        n = max(1, int(self.var_nimg.get()))
+        if n == self._ref_count:
+            return
+        old = [v.get() for v in self.ref_pic_vars]
+        for child in self.refs_frame.winfo_children():
+            child.destroy()
+        self.ref_pic_vars = []
+        for i in range(1, n + 1):
+            ttk.Label(self.refs_frame, text=f"<Picture {i}> is").grid(
+                row=i - 1, column=0, sticky="e")
+            default = old[i - 1] if i - 1 < len(old) else (
+                DEFAULT_PIC1_DESC if i == 1 else DEFAULT_PIC_DESC)
+            var = tk.StringVar(value=default)
+            ttk.Entry(self.refs_frame, textvariable=var).grid(
+                row=i - 1, column=1, sticky="ew", padx=(4, 0), pady=1)
+            self.ref_pic_vars.append(var)
+        ttk.Label(self.refs_frame, text="<Audio 1> is").grid(
+            row=n, column=0, sticky="e")
+        ttk.Entry(self.refs_frame, textvariable=self.ref_audio_var).grid(
+            row=n, column=1, sticky="ew", padx=(4, 0), pady=1)
+        self._ref_count = n
 
-        固定枠は「以下の骨組みの [ ] を置き換える形で出力する」と指示して
-        いるため、骨組みまで含めて渡すのが正しい使い方。骨組みには発話
-        1 つにつき 1 行の <d> が入っているので、話数も保たれやすい。
+    def _reference_header(self) -> str:
+        return render_reference_header(
+            [v.get() for v in self.ref_pic_vars], self.ref_audio_var.get())
+
+    def copy_scaffold_with_skeleton(self):
+        """LLM に貼るひとかたまり (参照の説明 + 固定枠 + 骨組み) をコピーする。
+
+        固定枠は「骨組みの [ ] を置き換える形で出力する」と指示しているため、
+        骨組みまで含めて渡すのが正しい使い方。骨組みには発話 1 つにつき
+        1 行の <d> が入っているので、話数も保たれやすい。
         """
         sc = self.out_scaffold.get("1.0", "end-1c")
         pr = self.out_prompt.get("1.0", "end-1c")
@@ -579,9 +625,10 @@ class App(ttk.Frame):
                                    "先に wav (またはタイムライン) を読み込んでください。")
             return
         self.clipboard_clear()
-        self.clipboard_append(sc + "\n\n" + pr)
+        self.clipboard_append(self._reference_header() + "\n\n" + sc + "\n\n" + pr)
         self.var_status.set(
-            "固定枠と骨組みをまとめてコピーしました。参照の説明行に続けて貼り付けてください。")
+            "参照の説明・固定枠・骨組みをまとめてコピーしました。"
+            "そのまま Auto-Prompter の Prompt に貼り付けてください。")
 
     def _build_substitute_tab(self, nb):
         t = ttk.Frame(nb, padding=4)
@@ -1040,7 +1087,11 @@ class App(ttk.Frame):
             return self.loaded_tl.total_sec, self.loaded_tl.frames
         return None
 
+    def _out_lang(self):
+        return "en" if self.var_outlang.get() == "English" else "ja"
+
     def _sync_outputs(self, *_):
+        self._rebuild_ref_entries()
         totals = self._totals()
         if totals is None:
             return
@@ -1063,8 +1114,10 @@ class App(ttk.Frame):
                 parts.append(f"範囲未設定 {n_norange} 行")
             note = "※ " + " / ".join(parts) + " が残っている。埋めてから使うこと。"
 
-        sc = render_scaffold(self.utts, total, frames, wav_name, n_img, note)
-        pr = render_prompt_skeleton(self.utts, total, n_img)
+        lang = self._out_lang()
+        sc = render_scaffold_for_llm(self.utts, total, frames, wav_name,
+                                     n_img, note, out_lang=lang)
+        pr = render_skeleton_for_llm(self.utts, total, n_img, out_lang=lang)
         for widget, text in ((self.out_scaffold, sc), (self.out_prompt, pr)):
             widget.delete("1.0", "end")
             widget.insert("1.0", text)
@@ -1091,7 +1144,11 @@ class App(ttk.Frame):
         clips.renumber(self.utts)
         wav_path = self.wav_path or (self.loaded_tl.wav_path if self.loaded_tl else "")
         return Timeline(utterances=list(self.utts), total_sec=total, frames=frames,
-                        wav_path=wav_path, n_images=int(self.var_nimg.get()))
+                        wav_path=wav_path, n_images=int(self.var_nimg.get()),
+                        ref_texts={
+                            "pictures": [v.get() for v in self.ref_pic_vars],
+                            "audio": self.ref_audio_var.get(),
+                        })
 
     def on_save_tl(self):
         tl = self.current_timeline()
@@ -1136,6 +1193,12 @@ class App(ttk.Frame):
         self.var_nimg.set(tl.n_images)
         if tl.utterances:
             self.var_lang.set(tl.utterances[0].lang)
+        self._rebuild_ref_entries()
+        pics = (tl.ref_texts or {}).get("pictures") or []
+        for var, text in zip(self.ref_pic_vars, pics):
+            var.set(text)
+        if (tl.ref_texts or {}).get("audio"):
+            self.ref_audio_var.set(tl.ref_texts["audio"])
         self._sync_all()
         self.var_status.set(
             "タイムラインを読み込みました。wav が無いため波形と再生は使えません。")

@@ -71,6 +71,8 @@ class Timeline:
     frames: int = 0
     wav_path: str = ""
     n_images: int = 2
+    # 参照の説明 (LLM 貼り付けの先頭に入れる)。{"pictures": [...], "audio": str}
+    ref_texts: dict = field(default_factory=dict)
 
     def usable_utterances(self) -> list[Utterance]:
         return [u for u in self.utterances if u.usable()]
@@ -92,6 +94,7 @@ class Timeline:
             frames=int(d.get("frames", 0)),
             wav_path=str(d.get("wav_path", "")),
             n_images=int(d.get("n_images", 2)),
+            ref_texts=dict(d.get("ref_texts", {})),
         )
 
     @classmethod

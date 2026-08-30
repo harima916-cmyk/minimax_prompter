@@ -79,6 +79,13 @@ class TestTimelineJson(unittest.TestCase):
         tl = Timeline.from_json(_path.fixture("timeline_demo.json"))
         self.assertEqual(tl.frames, 141)
         self.assertEqual(tl.utterances[1].speaker, "S2")
+        self.assertEqual(tl.ref_texts, {})   # 旧形式 JSON も読める
+
+    def test_ref_texts_roundtrip(self):
+        tl = Timeline(total_sec=1.0, frames=22,
+                      ref_texts={"pictures": ["a", "b"], "audio": "c"})
+        back = Timeline.from_json(tl.to_json())
+        self.assertEqual(back.ref_texts, {"pictures": ["a", "b"], "audio": "c"})
 
 
 if __name__ == "__main__":

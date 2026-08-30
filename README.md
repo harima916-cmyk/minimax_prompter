@@ -45,10 +45,14 @@ python -m h3_prompt_toolkit
    検出漏れは範囲をドラッグ →「**＋ 選択範囲から行を追加**」。
    ホイールでズーム、クリックで行選択。話者は行ごとに S1/S2… を指定
 4. 台本が手元にあるなら「**台詞を一括貼り付け…**」で行の並びに流し込める
-5. 右側の「LLM に渡す固定枠」タブの **「固定枠＋骨組みをまとめてコピー」** で
-   コピーして ComfyUI 側の LLM へ。骨組みには発話 1 つにつき 1 行の
-   `<d>` が入っているので、必ず両方セットで貼る (固定枠だけだと LLM が
-   台詞を結合・省略して話数が合わなくなる)
+5. 「LLM に渡す固定枠」タブ上部の **参照の説明欄**に、参照画像の枚数ぶん
+   簡単な説明を英語で書く (`<Picture 1> is …` の形でコピーの先頭に入る。
+   音声の 1 行は既定文あり)。**「参照の説明＋固定枠＋骨組みをまとめてコピー」**
+   で 1 発コピーして ComfyUI 側の LLM へ。骨組みには発話 1 つにつき 1 行の
+   `<d>` が入っているので、必ずセットで貼る (固定枠だけだと LLM が台詞を
+   結合・省略して話数が合わなくなる)。
+   LLM 向けテキストは**英語が既定** (H3 も書き換え LLM も英語前提)。
+   台詞と `[Japanese]` タグはそのまま。「LLM向け」で日本語にも切替可
 6. LLM の出力を「**差し替え [C]**」タブに貼って実行
    — 個数が食い違うときは対応付けダイアログが開く (無言で捨てない)
 7. 「**検証 [D]**」で機械チェックし、問題がなければ Input Text ノードへ
@@ -72,8 +76,11 @@ python -m h3_prompt_toolkit.cli measure --wav voice.wav --lines lines.txt --save
 # [A] 17k+5 フレーム長へ無音パディングした wav を書き出す
 python -m h3_prompt_toolkit.cli pad --wav voice.wav
 
-# [B] LLM に渡す固定枠と骨組み (stdout)。運用設定は stderr に併記
-python -m h3_prompt_toolkit.cli scaffold --timeline tl.json
+# [B] LLM に渡す固定枠と骨組み (stdout / 既定は英語)。運用設定は stderr に併記
+python -m h3_prompt_toolkit.cli scaffold --timeline tl.json \
+    --pic-desc "the main character" --pic-desc "the background" \
+    --audio-desc "the forced audio; the voice of <Picture 1> (S1)"
+#   --out-lang ja で日本語版。--pic-desc 等を省略すると GUI で保存した説明を使う
 
 # [C] LLM 出力の時刻・台詞を実測値へ差し替え
 python -m h3_prompt_toolkit.cli substitute --timeline tl.json llm_output.txt -o final.txt
