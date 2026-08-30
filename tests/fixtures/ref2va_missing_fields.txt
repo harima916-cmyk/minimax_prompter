@@ -1,0 +1,6 @@
+integrated_multimodal_description:
+[Shot 1] A woman stands on a park path. At 0:00.512, she speaks. S1 says, <d>[Japanese] こんにちは、今日はいい天気ですね。</d>.
+
+overall_soundscape: N/A
+
+non_diegetic_music: N/A

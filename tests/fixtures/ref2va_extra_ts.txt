@@ -1,0 +1,23 @@
+subject_definitions:
+<Picture 1> (ref_image_0): A woman with shoulder-length black hair, wearing a blue cardigan.
+<Picture 2> (ref_image_1): A sunlit park path lined with cherry trees.
+<Audio 1> (ref_audio_0): Two Japanese speakers; S1 female mid-range on screen, S2 male lower off screen.
+
+summary:
+[reference generation + audio reuse] The woman from <Picture 1> talks with a man on the path from <Picture 2>; <Audio 1> is reused as-is.
+
+retention_analysis:
+<Picture 1>: fully_preserved — identity and outfit.
+<Picture 2>: fully_preserved — environment.
+<Audio 1>: fully_copy — the audio signal is reused unchanged.
+
+detailed_description:
+[Shot 1] Live-action style. The woman stands on the path, camera static.
+At 0:00.500, she smiles. S1 says, <d>[Japanese] こんにちは、今日はいい天気ですね。</d>. She closes her mouth.
+At 0:02.100, she pauses and looks up at the sky.
+At 0:03.000, a man enters the frame. S2 says, <d>[Japanese] そうですね、散歩に行きましょう。</d>. Both walk slowly.
+The camera holds until 0:05.875.
+
+overall_soundscape: N/A
+
+non_diegetic_music: N/A
