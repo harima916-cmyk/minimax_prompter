@@ -63,6 +63,7 @@ class WaveformView(ttk.Frame):
     """波形の表示と範囲選択。
 
     - ドラッグ: 範囲選択 (on_range(a, b) を呼ぶ)
+    - 選択範囲の端をドラッグ: その端だけを動かして微調整
     - クリック: その時刻を含む行を選ぶ (on_pick(t) を呼ぶ)
     - ホイール: カーソル位置を中心にズーム
     """
@@ -70,6 +71,7 @@ class WaveformView(ttk.Frame):
     HEIGHT = 150
     TICK_H = 16
     MAX_PPS = 800.0
+    EDGE_PX = 6           # 端つかみ判定の幅 (px)
 
     def __init__(self, master, on_range=None, on_pick=None):
         super().__init__(master)
@@ -99,6 +101,7 @@ class WaveformView(ttk.Frame):
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._drag)
         self.canvas.bind("<ButtonRelease-1>", self._release)
+        self.canvas.bind("<Motion>", self._hover)
         self.canvas.bind("<MouseWheel>", self._wheel)     # Windows / macOS
         self.canvas.bind("<Button-4>", lambda e: self._wheel(e, +1))
         self.canvas.bind("<Button-5>", lambda e: self._wheel(e, -1))
@@ -171,36 +174,62 @@ class WaveformView(ttk.Frame):
     def _event_time(self, event):
         return self._x2t(self.canvas.canvasx(event.x))
 
+    def _edge_at(self, widget_x):
+        """widget_x が選択範囲のどちらかの端の上なら 'a' か 'b' を返す。"""
+        if not self.selection or self.pps is None:
+            return None
+        x = self.canvas.canvasx(widget_x)
+        if abs(x - self._t2x(self.selection[0])) <= self.EDGE_PX:
+            return "a"
+        if abs(x - self._t2x(self.selection[1])) <= self.EDGE_PX:
+            return "b"
+        return None
+
     def _press(self, event):
         if self.pps is None:
             return
-        self._drag_from = (event.x, self._event_time(event))
+        t = self._event_time(event)
+        edge = self._edge_at(event.x)
+        if edge == "a":
+            # 始端をつかんだ → 終端を支点に動かす
+            self._drag_from = (event.x, t, "edge", self.selection[1])
+        elif edge == "b":
+            self._drag_from = (event.x, t, "edge", self.selection[0])
+        else:
+            self._drag_from = (event.x, t, "new", t)
 
     def _drag(self, event):
         if self._drag_from is None:
             return
-        t0 = self._drag_from[1]
-        t1 = self._event_time(event)
-        self.selection = (min(t0, t1), max(t0, t1))
+        _, _, _kind, anchor = self._drag_from
+        t = self._event_time(event)
+        self.selection = (min(anchor, t), max(anchor, t))
         self.redraw()
 
     def _release(self, event):
         if self._drag_from is None:
             return
-        x0, t0 = self._drag_from
+        x0, t0, kind, anchor = self._drag_from
         self._drag_from = None
-        if abs(event.x - x0) < 4:
+        if kind == "new" and abs(event.x - x0) < 4:
             if self.on_pick:
                 self.on_pick(t0)
             return
         t1 = self._event_time(event)
-        a, b = min(t0, t1), max(t0, t1)
+        a, b = min(anchor, t1), max(anchor, t1)
         if b - a < 0.01:
-            return
+            if kind == "new":
+                return
+            b = min(self.duration, a + 0.01)   # 端ドラッグで潰れたら最小幅を残す
         self.selection = (a, b)
         self.redraw()
         if self.on_range:
             self.on_range(a, b)
+
+    def _hover(self, event):
+        cursor = "sb_h_double_arrow" if self._edge_at(event.x) else ""
+        if self.canvas["cursor"] != cursor:
+            self.canvas.configure(cursor=cursor)
 
     def _wheel(self, event, direction=None):
         if self.pps is None:
@@ -263,12 +292,16 @@ class WaveformView(ttk.Frame):
             x = self._t2x(self.marker)
             c.create_line(x, 0, x, H, fill="#d33", dash=(4, 3), width=2)
 
-        # 選択範囲
+        # 選択範囲 (両端に微調整用のつまみを描く)
         if self.selection:
             a, b = self.selection
-            c.create_rectangle(self._t2x(a), 0, self._t2x(b), H,
+            xa, xb = self._t2x(a), self._t2x(b)
+            c.create_rectangle(xa, 0, xb, H,
                                fill="#3b82f6", stipple="gray50",
                                outline="#1d4ed8", width=2)
+            for x in (xa, xb):
+                c.create_rectangle(x - 3, mid - 12, x + 3, mid + 12,
+                                   fill="#1d4ed8", outline="#ffffff")
 
         # 時間目盛り
         step = 1.0
@@ -442,6 +475,9 @@ class App(ttk.Frame):
         ttk.Label(edit, text="終了:").grid(row=0, column=2, sticky="e")
         self.ent_end = ttk.Entry(edit, width=10)
         self.ent_end.grid(row=0, column=3, padx=(2, 8))
+        for w in (self.ent_start, self.ent_end):
+            w.bind("<Return>", self._on_range_typed)
+            w.bind("<FocusOut>", self._on_range_typed)
         ttk.Label(edit, text="話者:").grid(row=0, column=4, sticky="e")
         self.cmb_spk = ttk.Combobox(edit, width=5, values=["S1", "S2", "S3", "S4"])
         self.cmb_spk.set("S1")
@@ -736,6 +772,22 @@ class App(ttk.Frame):
         self.var_selinfo.set(
             f"選択範囲: {fmt_ts(a)} – {fmt_ts(b)}  ({b - a:.3f} 秒)")
 
+    def _on_range_typed(self, *_):
+        """開始/終了欄に打った値を波形の選択範囲へ反映する。"""
+        a = _parse_time_field(self.ent_start.get())
+        b = _parse_time_field(self.ent_end.get())
+        if a is None or b is None or b <= a:
+            return
+        if self.samples is not None:
+            dur = len(self.samples) / self.sr
+            a = max(0.0, min(a, dur))
+            b = max(0.0, min(b, dur))
+            if b <= a:
+                return
+            self.wave.set_selection(a, b)
+        self.var_selinfo.set(
+            f"選択範囲: {fmt_ts(a)} – {fmt_ts(b)}  ({b - a:.3f} 秒)")
+
     def on_wave_pick(self, t):
         for u in self.utts:
             if u.start is not None and u.end is not None and u.start <= t <= u.end:
@@ -750,7 +802,10 @@ class App(ttk.Frame):
         if a is None or b is None or b <= a:
             self.var_status.set("再生する範囲を先に選択してください。")
             return
-        self.player.play(clips.slice_range(self.samples, self.sr, a, b), self.sr)
+        try:
+            self.player.play(clips.slice_range(self.samples, self.sr, a, b), self.sr)
+        except Exception as exc:
+            self.var_status.set(f"再生できませんでした: {exc}")
 
     # -- 行の操作 ------------------------------------------------------------
 
