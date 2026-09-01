@@ -257,6 +257,47 @@ def render_duration_note(wav_name: str, frames: int) -> str:
     ])
 
 
+def render_brief(utts, total_sec, frames, wav_name,
+                 pic_texts=(), audio_text="") -> str:
+    """仕様書 (minimax_ref2v_rule.txt) に追記するブリーフ。
+
+    仕様書は「ユーザーが強制音声ワークフローだと言ったらモードを切り替え、
+    <d> は逐語トランスクリプト」という契約なので、ここでは
+    ① 強制音声である宣言 ② 参照の説明 ③ 実効尺 (17k+5)
+    ④ 実測トランスクリプト を英語で列挙する。創作は LLM 側の仕事。
+    """
+    usable = [u for u in utts if u.start is not None and u.text]
+    L = []
+    L.append("# BRIEF — forced-audio job (measured by h3-prompt-toolkit)")
+    L.append("")
+    L.append("This job uses the forced-audio / TTS-driven workflow: the supplied "
+             "audio file is encoded into the audio latent and frozen with a zero "
+             "noise mask, so it becomes the output track verbatim and the video "
+             "must lip-sync to it.")
+    L.append("")
+    L.append("References:")
+    for line in render_reference_header(list(pic_texts), audio_text).splitlines():
+        L.append(f"- {line}")
+    L.append("")
+    L.append(f"Forced audio: {wav_name} — effective duration "
+             f"{total_sec:.3f} s = {frames} frames @ {FPS} fps (17k+5 grid). "
+             f"Every cut timestamp must fall strictly inside it.")
+    if usable:
+        tail = total_sec - max(u.end for u in usable if u.end is not None)
+        L.append(f"Silent tail after the last utterance: {max(0.0, tail):.3f} s.")
+    L.append("")
+    L.append("Verbatim transcript, measured from the waveform "
+             "(FIXED — reproduce each <d> exactly):")
+    if not usable:
+        L.append("(no utterances entered yet)")
+    for u in usable:
+        L.append(f"[{u.index}] {fmt_ts(u.start)} - {fmt_ts(u.end)} "
+                 f"({u.speaker}) <d>[{u.lang}] {u.text}</d>")
+    L.append("")
+    L.append("Mouths move only inside these spans; lips stay closed elsewhere.")
+    return "\n".join(L)
+
+
 def render_settings_note(settings: dict | None = None) -> str:
     """運用設定の併記用テキスト。LLM への貼り付け対象ではなく操作者向け。"""
     s = dict(RECOMMENDED_SETTINGS)

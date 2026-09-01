@@ -11,7 +11,7 @@ from h3_prompt_toolkit.scaffold import (
     render_scaffold, render_prompt_skeleton,
     render_scaffold_en, render_prompt_skeleton_en,
     render_scaffold_for_llm, render_skeleton_for_llm,
-    render_reference_header,
+    render_reference_header, render_brief,
     DEFAULT_PIC1_DESC, DEFAULT_AUDIO_DESC)
 
 
@@ -86,6 +86,40 @@ class TestDispatch(unittest.TestCase):
                                      out_lang="ja")
         self.assertEqual(pr, render_prompt_skeleton(tl.utterances,
                                                     tl.total_sec, 2))
+
+
+class TestBrief(unittest.TestCase):
+    """仕様書 (minimax_ref2v_rule.txt) に追記するブリーフ。"""
+
+    def setUp(self):
+        self.tl = demo_tl()
+        self.brief = render_brief(self.tl.utterances, self.tl.total_sec,
+                                  self.tl.frames, "voice_141f.wav",
+                                  ["the singer", "the stage"], "her voice")
+
+    def test_declares_forced_audio_mode(self):
+        self.assertIn("forced-audio / TTS-driven workflow", self.brief)
+        self.assertIn("frozen", self.brief)
+
+    def test_duration_facts(self):
+        self.assertIn("5.875 s = 141 frames @ 24 fps (17k+5 grid)", self.brief)
+        self.assertIn("voice_141f.wav", self.brief)
+        # 無音尾部 = 5.875 - 5.021
+        self.assertIn("Silent tail after the last utterance: 0.854 s.", self.brief)
+
+    def test_verbatim_transcript_lines(self):
+        self.assertIn("[1] 0:00.512 - 0:02.104 (S1) "
+                      "<d>[Japanese] こんにちは、今日はいい天気ですね。</d>", self.brief)
+        self.assertIn("[2] 0:03.008 - 0:05.021 (S2) "
+                      "<d>[Japanese] そうですね、散歩に行きましょう。</d>", self.brief)
+
+    def test_references_included(self):
+        self.assertIn("- <Picture 1> is the singer.", self.brief)
+        self.assertIn("- <Audio 1> is her voice.", self.brief)
+
+    def test_empty_timeline_placeholder(self):
+        brief = render_brief([], 5.875, 141, "voice.wav")
+        self.assertIn("(no utterances entered yet)", brief)
 
 
 class TestReferenceHeader(unittest.TestCase):

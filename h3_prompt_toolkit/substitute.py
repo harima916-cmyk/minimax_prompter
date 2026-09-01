@@ -136,8 +136,17 @@ def substitute(text: str, tl: Timeline, ts_map=None, d_map=None,
     res.d_occs = ref2va.dialogue_occurrences(body, base=dd.body_start)
 
     # -- 対応付け ----------------------------------------------------------
-    tmap = _resolve_map(len(utts), len(res.at_occs), ts_map,
-                        "タイムスタンプ", res.problems)
+    auto_skip_ts = ts_map is None and not res.at_occs
+    if auto_skip_ts:
+        # "At M:SS.mmm" 形式が 1 つも無い出力 (単一ショット構成など) は
+        # 置換対象が無いだけなので、個数不一致としては扱わない。
+        tmap = [0] * len(utts)
+        res.report.append(
+            "出力に \"At M:SS.mmm\" 形式の時刻は無いため、時刻の置換はありません"
+            " (単一ショット構成)。")
+    else:
+        tmap = _resolve_map(len(utts), len(res.at_occs), ts_map,
+                            "タイムスタンプ", res.problems)
     dmap = _resolve_map(len(utts), len(res.d_occs), d_map,
                         "台詞", res.problems)
 
@@ -166,7 +175,8 @@ def substitute(text: str, tl: Timeline, ts_map=None, d_map=None,
     for i, u in enumerate(utts):
         j = tmap[i]
         if j == 0:
-            res.report.append(f"発話({i+1}): タイムスタンプ置換をスキップ (指定による)")
+            if not auto_skip_ts:
+                res.report.append(f"発話({i+1}): タイムスタンプ置換をスキップ (指定による)")
             continue
         occ = res.at_occs[j - 1]
         new = fmt_ts(u.start)
