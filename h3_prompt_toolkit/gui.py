@@ -533,7 +533,8 @@ class App(ttk.Frame):
         t = ttk.Frame(nb, padding=4)
         t.columnconfigure(0, weight=1)
         t.columnconfigure(1, weight=1)
-        t.rowconfigure(3, weight=1)
+        t.rowconfigure(3, weight=2)
+        t.rowconfigure(5, weight=3)
 
         spec = ttk.Frame(t)
         spec.grid(row=0, column=0, columnspan=2, sticky="ew")
@@ -553,18 +554,24 @@ class App(ttk.Frame):
         self._ref_count = 0
         self._rebuild_ref_entries()
 
-        ttk.Label(t, text="追記されるブリーフ (実測値から自動生成。行を編集すると再生成で戻るので、"
-                          "書き足しはコピー直前に):").grid(
+        ttk.Label(t, text="どういう動画にしたいか (シナリオ・演出の要望。"
+                          "日本語で OK — 英語にするのは LLM の仕事):").grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self.txt_brief = tk.Text(t, wrap="word", undo=True, height=14)
-        self.txt_brief.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        self.txt_scenario = tk.Text(t, wrap="word", undo=True, height=5)
+        self.txt_scenario.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        self.txt_scenario.bind("<KeyRelease>", lambda e: self._sync_outputs())
+
+        ttk.Label(t, text="追記されるブリーフ (実測値から自動生成):").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.txt_brief = tk.Text(t, wrap="word", undo=True, height=10)
+        self.txt_brief.grid(row=5, column=0, columnspan=2, sticky="nsew")
 
         ttk.Button(t, text="仕様書＋ブリーフをまとめてコピー (LLM 貼り付け用)",
                    command=self.copy_spec_with_brief).grid(
-            row=4, column=0, sticky="ew")
+            row=6, column=0, sticky="ew")
         ttk.Button(t, text="ブリーフのみコピー",
                    command=lambda: self.copy(self.txt_brief)).grid(
-            row=4, column=1, sticky="ew")
+            row=6, column=1, sticky="ew")
         nb.add(t, text="LLM プロンプト")
 
     def _update_spec_label(self):
@@ -1002,7 +1009,8 @@ class App(ttk.Frame):
 
         brief = render_brief(self.utts, total, frames, wav_name,
                              [v.get() for v in self.ref_pic_vars],
-                             self.ref_audio_var.get())
+                             self.ref_audio_var.get(),
+                             scenario=self.txt_scenario.get("1.0", "end-1c"))
         self.txt_brief.delete("1.0", "end")
         self.txt_brief.insert("1.0", brief)
 
@@ -1079,6 +1087,7 @@ class App(ttk.Frame):
                         ref_texts={
                             "pictures": [v.get() for v in self.ref_pic_vars],
                             "audio": self.ref_audio_var.get(),
+                            "scenario": self.txt_scenario.get("1.0", "end-1c"),
                         })
 
     def on_save_tl(self):
@@ -1130,6 +1139,8 @@ class App(ttk.Frame):
             var.set(text)
         if (tl.ref_texts or {}).get("audio"):
             self.ref_audio_var.set(tl.ref_texts["audio"])
+        self.txt_scenario.delete("1.0", "end")
+        self.txt_scenario.insert("1.0", (tl.ref_texts or {}).get("scenario", ""))
         self._sync_all()
         self.var_status.set(
             "タイムラインを読み込みました。wav が無いため波形と再生は使えません。")

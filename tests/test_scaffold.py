@@ -121,6 +121,20 @@ class TestBrief(unittest.TestCase):
         brief = render_brief([], 5.875, 141, "voice.wav")
         self.assertIn("(no utterances entered yet)", brief)
 
+    def test_scenario_included_verbatim(self):
+        brief = render_brief(self.tl.utterances, self.tl.total_sec,
+                             self.tl.frames, "voice.wav",
+                             scenario="公園で楽しく散歩する二人。\n明るい雰囲気で。")
+        self.assertIn("Scenario — what the user wants", brief)
+        self.assertIn("公園で楽しく散歩する二人。", brief)
+        self.assertIn("明るい雰囲気で。", brief)
+        # シナリオはトランスクリプトより前に来る
+        self.assertLess(brief.index("Scenario"), brief.index("Verbatim transcript"))
+
+    def test_scenario_default_latitude(self):
+        # 未記入なら「創作裁量で埋めよ」の一文が入る
+        self.assertIn("Scenario: not specified", self.brief)
+
 
 class TestReferenceHeader(unittest.TestCase):
     def test_basic(self):
