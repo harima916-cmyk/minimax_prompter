@@ -258,13 +258,14 @@ def render_duration_note(wav_name: str, frames: int) -> str:
 
 
 def render_brief(utts, total_sec, frames, wav_name,
-                 pic_texts=(), audio_text="") -> str:
+                 pic_texts=(), audio_text="", scenario="") -> str:
     """仕様書 (minimax_ref2v_rule.txt) に追記するブリーフ。
 
     仕様書は「ユーザーが強制音声ワークフローだと言ったらモードを切り替え、
     <d> は逐語トランスクリプト」という契約なので、ここでは
-    ① 強制音声である宣言 ② 参照の説明 ③ 実効尺 (17k+5)
-    ④ 実測トランスクリプト を英語で列挙する。創作は LLM 側の仕事。
+    ① 強制音声である宣言 ② シナリオ (ユーザーの要望そのまま)
+    ③ 参照の説明 ④ 実効尺 (17k+5) ⑤ 実測トランスクリプト を列挙する。
+    シナリオは日本語のままでよい — 英語にするのは LLM の仕事。
     """
     usable = [u for u in utts if u.start is not None and u.text]
     L = []
@@ -274,6 +275,15 @@ def render_brief(utts, total_sec, frames, wav_name,
              "audio file is encoded into the audio latent and frozen with a zero "
              "noise mask, so it becomes the output track verbatim and the video "
              "must lip-sync to it.")
+    L.append("")
+    scenario = (scenario or "").strip()
+    if scenario:
+        L.append("Scenario — what the user wants (in their own words; may be "
+                 "in Japanese):")
+        L.extend(scenario.splitlines())
+    else:
+        L.append("Scenario: not specified — fill the gap with your own craft "
+                 "choices within the transcript, references, and duration below.")
     L.append("")
     L.append("References:")
     for line in render_reference_header(list(pic_texts), audio_text).splitlines():
