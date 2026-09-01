@@ -90,6 +90,42 @@ class TestCountMismatch(unittest.TestCase):
         self.assertFalse(res.ok)
 
 
+SINGLE_SHOT = """subject_definitions:
+<Subject 1> is the woman in <Picture 1>, long dark hair, blue cardigan.
+<Audio 1> is the voice-timbre reference for <Subject 1> (S1), and is the target video's complete final audio track.
+
+summary:
+[reference generation + audio reuse] <Subject 1> speaks to camera in a single unbroken medium close-up, lip-synced to <Audio 1>.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - identity and outfit.
+<Audio 1>: fully_copy - reused 1:1 as the final audio track.
+
+detailed_description:
+The target video is live-action with soft window light.
+[Shot 1] A medium close-up frames <Subject 1> facing the camera. She looks up and <Subject 1> (S1) says, <d>[Japanese] こんにちは。</d> Her lip movements are perfectly synchronized with her words. A man steps in beside her and (S2) replies, <d>[Japanese] ええ、そうですね</d> while she nods slowly.
+
+overall_soundscape:
+N/A
+
+non_diegetic_music:
+N/A
+"""
+
+
+class TestSingleShotStyle(unittest.TestCase):
+    """仕様書 §8 の想定形 (単一ショット・At 時刻なし) を正常系として扱う。"""
+
+    def test_no_at_timestamps_is_not_a_mismatch(self):
+        res = substitute(SINGLE_SHOT, demo_tl())
+        self.assertTrue(res.ok, res.report_text())
+        self.assertFalse(res.needs_mapping)
+        self.assertIn("単一ショット構成", res.report_text())
+        # 台詞は逐語に復元される
+        self.assertIn("<d>[Japanese] こんにちは、今日はいい天気ですね。</d>", res.text)
+        self.assertIn("<d>[Japanese] そうですね、散歩に行きましょう。</d>", res.text)
+
+
 class TestStructuralIssues(unittest.TestCase):
     def test_missing_detailed_description(self):
         res = substitute(_path.fixture("ref2va_missing_fields.txt"), demo_tl())

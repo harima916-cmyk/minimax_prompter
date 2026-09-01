@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Tkinter GUI。
+"""Tkinter GUI — 最小構成。
 
-台詞の入力は「手動クリップ方式」: 波形をドラッグして範囲を選び、
-その範囲を再生して確かめながら台詞を打ち込み、行として追加する。
-自動検出は区間の下書きを表に流し込む補助に使う。
+やることは 3 つだけ:
+  1. 波形をドラッグして発話範囲を選び、台詞を手で入力する (自動検出はしない)
+  2. 実測タイムラインを「ブリーフ」にして、リポジトリの仕様書
+     (minimax_ref2v_rule.txt) に追記した LLM プロンプトを作る
+  3. LLM 出力の台詞・時刻を機械修正 [C] し、検証 [D] する
 
-右側のタブは
-  固定枠 [B] / 骨組み [B] / 差し替え [C] / 検証 [D] / モデル比較 / 運用設定。
 依存は numpy と tkinter のみ。ComfyUI 環境には一切依存しない。
 """
 
@@ -18,18 +18,16 @@ from tkinter import ttk, filedialog, messagebox
 
 from .grid import FPS, grid_candidates, comfy_float_hint
 from .audio import read_wav, read_wav_raw_stereo, write_wav_pcm16, pad_to_seconds
-from .segments import detect_segments
 from .timeline import (Timeline, Utterance, parse_lines, parse_ts, fmt_ts)
-from .scaffold import (render_scaffold_for_llm, render_skeleton_for_llm,
-                       render_reference_header, render_settings_note,
-                       render_duration_note,
+from .scaffold import (render_brief, render_duration_note,
                        DEFAULT_PIC1_DESC, DEFAULT_PIC_DESC, DEFAULT_AUDIO_DESC)
 from .substitute import substitute
 from .validate import validate, render_report
-from .compare import compare_outputs, render_table, render_details
 from . import clips
 
 APP_TITLE = "MiniMax-H3 強制音声プロンプトビルダー"
+
+SPEC_FILENAME = "minimax_ref2v_rule.txt"
 
 SPEAKER_COLORS = {
     "S1": "#2f6fbd",
@@ -56,6 +54,16 @@ def _parse_time_field(text):
         return float(s)
     except ValueError:
         return None
+
+
+def _find_default_spec():
+    """カレント → パッケージの親 (リポジトリ) の順で仕様書を探す。"""
+    for base in (os.getcwd(),
+                 os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+        path = os.path.join(base, SPEC_FILENAME)
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +346,7 @@ class App(ttk.Frame):
         master.columnconfigure(0, weight=1)
         master.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(4, weight=1)
+        self.rowconfigure(3, weight=1)
 
         self.samples = None
         self.sr = None
@@ -347,8 +355,8 @@ class App(ttk.Frame):
         self.loaded_tl = None       # JSON 読込時の尺情報 (wav なし運用)
         self.utts = []              # 発話クリップの表 (Utterance のリスト)
         self.sel_row = None         # 選択中の行 index (1 始まり)
-        self.cmp_entries = []       # [(名前, テキスト)]
         self.player = clips.Player()
+        self.spec_path = _find_default_spec()
 
         self._build_file_row()
         self._build_grid_row()
@@ -423,7 +431,7 @@ class App(ttk.Frame):
         self.btn_stop.pack(side="left", padx=(4, 0))
         ttk.Button(bar, text="表示を全体に戻す",
                    command=self.wave.zoom_fit).pack(side="left", padx=(12, 0))
-        ttk.Label(bar, text="ホイールでズーム / クリックで行を選択",
+        ttk.Label(bar, text="ホイールでズーム / クリックで行を選択 / 端をドラッグで微調整",
                   foreground="#888").pack(side="left", padx=(12, 0))
         if not self.player.available():
             ttk.Label(bar, text="(この環境では再生コマンドが見つかりません)",
@@ -431,7 +439,7 @@ class App(ttk.Frame):
 
     def _build_body(self):
         pane = ttk.PanedWindow(self, orient="horizontal")
-        pane.grid(row=4, column=0, sticky="nsew")
+        pane.grid(row=3, column=0, sticky="nsew")
 
         # 左: 発話クリップの表と編集
         left = ttk.Frame(pane, padding=(0, 0, 6, 0))
@@ -450,12 +458,6 @@ class App(ttk.Frame):
                           values=["Japanese", "English", "Chinese", "Korean"])
         cb.pack(side="left", padx=(4, 0))
         cb.bind("<<ComboboxSelected>>", lambda e: self._apply_lang())
-        ttk.Label(opt, text="LLM向け:").pack(side="left", padx=(12, 0))
-        self.var_outlang = tk.StringVar(value="English")
-        cb2 = ttk.Combobox(opt, textvariable=self.var_outlang, width=8,
-                           state="readonly", values=["English", "日本語"])
-        cb2.pack(side="left", padx=(4, 0))
-        cb2.bind("<<ComboboxSelected>>", lambda e: self._sync_outputs())
 
         cols = ("no", "start", "end", "spk", "text")
         self.tree = ttk.Treeview(left, columns=cols, show="headings",
@@ -507,25 +509,8 @@ class App(ttk.Frame):
         ttk.Button(btns, text="全行削除",
                    command=self.on_rows_clear).pack(side="left", padx=(6, 0))
         ttk.Separator(btns, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(btns, text="自動検出を取り込む…",
-                   command=self.on_detect_import).pack(side="left")
         ttk.Button(btns, text="台詞を一括貼り付け…",
-                   command=self.on_bulk_paste).pack(side="left", padx=(6, 0))
-
-        det = ttk.Frame(edit)
-        det.grid(row=2, column=0, columnspan=8, sticky="ew", pady=(6, 0))
-        ttk.Label(det, text="自動検出のしきい値 (dB):").pack(side="left")
-        self.var_thresh = tk.DoubleVar(value=-40.0)
-        ttk.Scale(det, from_=-70, to=-15, variable=self.var_thresh,
-                  orient="horizontal", length=140,
-                  command=lambda e: self.var_thresh_lbl.set(
-                      f"{self.var_thresh.get():.0f}")).pack(side="left", padx=(4, 2))
-        self.var_thresh_lbl = tk.StringVar(value="-40")
-        ttk.Label(det, textvariable=self.var_thresh_lbl, width=4).pack(side="left")
-        ttk.Label(det, text="無音とみなす長さ (ms):").pack(side="left", padx=(10, 0))
-        self.var_sil = tk.IntVar(value=250)
-        ttk.Spinbox(det, from_=50, to=2000, increment=50, width=6,
-                    textvariable=self.var_sil).pack(side="left", padx=(4, 0))
+                   command=self.on_bulk_paste).pack(side="left")
 
         pane.add(left, weight=1)
 
@@ -538,50 +523,55 @@ class App(ttk.Frame):
         nb.grid(row=0, column=0, sticky="nsew")
         self.nb = nb
 
-        self.out_scaffold = self._build_scaffold_tab(nb)
-        self.out_prompt = self._text_tab(nb, "プロンプト骨組み")
+        self._build_prompt_tab(nb)
         self._build_substitute_tab(nb)
         self._build_validate_tab(nb)
-        self._build_compare_tab(nb)
-        self._build_settings_tab(nb)
 
         pane.add(right, weight=2)
 
-    def _text_tab(self, nb, title):
-        t = ttk.Frame(nb)
-        t.columnconfigure(0, weight=1)
-        t.rowconfigure(0, weight=1)
-        w = tk.Text(t, wrap="word", undo=True)
-        w.grid(row=0, column=0, sticky="nsew")
-        ttk.Button(t, text="コピー", command=lambda: self.copy(w)).grid(
-            row=1, column=0, sticky="ew")
-        nb.add(t, text=title)
-        return w
-
-    def _build_scaffold_tab(self, nb):
-        t = ttk.Frame(nb)
+    def _build_prompt_tab(self, nb):
+        t = ttk.Frame(nb, padding=4)
         t.columnconfigure(0, weight=1)
         t.columnconfigure(1, weight=1)
-        t.rowconfigure(1, weight=1)
+        t.rowconfigure(3, weight=1)
+
+        spec = ttk.Frame(t)
+        spec.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Button(spec, text="仕様書を開く…", command=self.on_open_spec).pack(
+            side="left")
+        self.var_spec = tk.StringVar()
+        ttk.Label(spec, textvariable=self.var_spec, foreground="#333").pack(
+            side="left", padx=(8, 0))
+        self._update_spec_label()
 
         self.refs_frame = ttk.LabelFrame(
-            t, text="参照の説明 (コピーの先頭に入る。英語で簡潔に)", padding=4)
-        self.refs_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
+            t, text="参照の説明 (ブリーフに入る。英語で簡潔に)", padding=4)
+        self.refs_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.refs_frame.columnconfigure(1, weight=1)
         self.ref_pic_vars = []
         self.ref_audio_var = tk.StringVar(value=DEFAULT_AUDIO_DESC)
         self._ref_count = 0
         self._rebuild_ref_entries()
 
-        w = tk.Text(t, wrap="word", undo=True)
-        w.grid(row=1, column=0, columnspan=2, sticky="nsew")
-        ttk.Button(t, text="参照の説明＋固定枠＋骨組みをまとめてコピー (LLM 貼り付け用)",
-                   command=self.copy_scaffold_with_skeleton).grid(
-            row=2, column=0, sticky="ew")
-        ttk.Button(t, text="固定枠のみコピー", command=lambda: self.copy(w)).grid(
-            row=2, column=1, sticky="ew")
-        nb.add(t, text="LLM に渡す固定枠")
-        return w
+        ttk.Label(t, text="追記されるブリーフ (実測値から自動生成。行を編集すると再生成で戻るので、"
+                          "書き足しはコピー直前に):").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.txt_brief = tk.Text(t, wrap="word", undo=True, height=14)
+        self.txt_brief.grid(row=3, column=0, columnspan=2, sticky="nsew")
+
+        ttk.Button(t, text="仕様書＋ブリーフをまとめてコピー (LLM 貼り付け用)",
+                   command=self.copy_spec_with_brief).grid(
+            row=4, column=0, sticky="ew")
+        ttk.Button(t, text="ブリーフのみコピー",
+                   command=lambda: self.copy(self.txt_brief)).grid(
+            row=4, column=1, sticky="ew")
+        nb.add(t, text="LLM プロンプト")
+
+    def _update_spec_label(self):
+        if self.spec_path:
+            self.var_spec.set(f"仕様書: {os.path.basename(self.spec_path)}")
+        else:
+            self.var_spec.set(f"仕様書: 未選択 ({SPEC_FILENAME} が見つかりません)")
 
     def _rebuild_ref_entries(self):
         """参照画像の枚数に合わせて説明の入力欄を作り直す (入力値は保持)。"""
@@ -607,29 +597,6 @@ class App(ttk.Frame):
             row=n, column=1, sticky="ew", padx=(4, 0), pady=1)
         self._ref_count = n
 
-    def _reference_header(self) -> str:
-        return render_reference_header(
-            [v.get() for v in self.ref_pic_vars], self.ref_audio_var.get())
-
-    def copy_scaffold_with_skeleton(self):
-        """LLM に貼るひとかたまり (参照の説明 + 固定枠 + 骨組み) をコピーする。
-
-        固定枠は「骨組みの [ ] を置き換える形で出力する」と指示しているため、
-        骨組みまで含めて渡すのが正しい使い方。骨組みには発話 1 つにつき
-        1 行の <d> が入っているので、話数も保たれやすい。
-        """
-        sc = self.out_scaffold.get("1.0", "end-1c")
-        pr = self.out_prompt.get("1.0", "end-1c")
-        if not sc.strip():
-            messagebox.showwarning("出力がありません",
-                                   "先に wav (またはタイムライン) を読み込んでください。")
-            return
-        self.clipboard_clear()
-        self.clipboard_append(self._reference_header() + "\n\n" + sc + "\n\n" + pr)
-        self.var_status.set(
-            "参照の説明・固定枠・骨組みをまとめてコピーしました。"
-            "そのまま Auto-Prompter の Prompt に貼り付けてください。")
-
     def _build_substitute_tab(self, nb):
         t = ttk.Frame(nb, padding=4)
         t.columnconfigure(0, weight=1)
@@ -637,7 +604,7 @@ class App(ttk.Frame):
         t.rowconfigure(4, weight=3)
         t.rowconfigure(7, weight=2)
 
-        ttk.Label(t, text="LLM の Ref2VA 出力を貼り付け:").grid(row=0, column=0, sticky="w")
+        ttk.Label(t, text="LLM の出力を貼り付け:").grid(row=0, column=0, sticky="w")
         self.txt_llm = tk.Text(t, height=10, wrap="word", undo=True)
         self.txt_llm.grid(row=1, column=0, sticky="nsew")
 
@@ -686,48 +653,11 @@ class App(ttk.Frame):
         self.txt_valres.grid(row=4, column=0, sticky="nsew")
         nb.add(t, text="検証 [D]")
 
-    def _build_compare_tab(self, nb):
-        t = ttk.Frame(nb, padding=4)
-        t.columnconfigure(0, weight=1)
-        t.rowconfigure(1, weight=1)
-        t.rowconfigure(3, weight=3)
-
-        ttk.Label(t, text="比較するモデル出力:").grid(row=0, column=0, sticky="w")
-        self.lst_cmp = tk.Listbox(t, height=5)
-        self.lst_cmp.grid(row=1, column=0, sticky="nsew")
-
-        bar = ttk.Frame(t)
-        bar.grid(row=2, column=0, sticky="ew", pady=4)
-        ttk.Button(bar, text="貼り付けで追加…", command=self.on_cmp_paste).pack(side="left")
-        ttk.Button(bar, text="ファイルで追加…", command=self.on_cmp_file).pack(
-            side="left", padx=(8, 0))
-        ttk.Button(bar, text="選択を削除", command=self.on_cmp_del).pack(
-            side="left", padx=(8, 0))
-        ttk.Button(bar, text="比較実行", command=self.on_compare).pack(
-            side="left", padx=(16, 0))
-
-        self.txt_cmpres = tk.Text(t, height=12, wrap="none",
-                                  font=("TkFixedFont",))
-        self.txt_cmpres.grid(row=3, column=0, sticky="nsew")
-        nb.add(t, text="モデル比較")
-
-    def _build_settings_tab(self, nb):
-        t = ttk.Frame(nb, padding=4)
-        t.columnconfigure(0, weight=1)
-        t.rowconfigure(0, weight=1)
-        w = tk.Text(t, wrap="word", foreground="#333")
-        w.grid(row=0, column=0, sticky="nsew")
-        w.insert("1.0", render_settings_note() + "\n\n"
-                 "この値は ComfyUI 側 (Prompt Writer / Rewriter ノード) の設定と\n"
-                 "一致させること。食い違うと事故になる。")
-        w.configure(state="disabled")
-        nb.add(t, text="運用設定")
-
     def _build_status(self):
         self.var_status = tk.StringVar(
             value="wav を開くか、タイムライン JSON を読み込んでください。")
         ttk.Label(self, textvariable=self.var_status, foreground="#444").grid(
-            row=5, column=0, sticky="w", pady=(6, 0))
+            row=4, column=0, sticky="w", pady=(6, 0))
 
     # -- wav / グリッド ------------------------------------------------------
 
@@ -774,15 +704,12 @@ class App(ttk.Frame):
         self.btn_stop["state"] = self.btn_play["state"]
 
         self.wave.set_audio(self.samples, self.sr)
-
-        # 下書きとして自動検出を流し込む (台詞は空。あとで各行に入力する)
-        segs = self._detect()
-        self.utts = clips.from_segments(segs, self.var_lang.get())
+        self.utts = []
         self.sel_row = None
         self._sync_all()
         self.var_status.set(
-            f"自動検出で {len(segs)} 区間を下書きにしました。"
-            "各行を選んで再生し、台詞を入力してください。範囲は波形のドラッグで作り直せます。")
+            "波形をドラッグして発話範囲を選び、▶で確かめて台詞を入力し、"
+            "「＋ 選択範囲から行を追加」してください。")
 
     def selected_grid(self):
         i = self.cmb_grid.current()
@@ -795,14 +722,6 @@ class App(ttk.Frame):
         if sel:
             self.wave.set_marker(sel[2])
         self._sync_outputs()
-
-    def _detect(self):
-        if self.samples is None:
-            return []
-        return detect_segments(
-            self.samples, self.sr,
-            thresh_db=float(self.var_thresh.get()),
-            min_silence_ms=int(self.var_sil.get()))
 
     def on_pad(self):
         if self.samples is None:
@@ -966,25 +885,6 @@ class App(ttk.Frame):
         self.sel_row = None
         self._sync_all()
 
-    def on_detect_import(self):
-        if self.samples is None:
-            messagebox.showwarning("wav がありません", "先に wav を開いてください。")
-            return
-        segs = self._detect()
-        if not segs:
-            self.var_status.set("区間が検出できませんでした。しきい値を上げてください。")
-            return
-        if self.utts and any(u.text for u in self.utts):
-            if not messagebox.askyesno(
-                    "確認",
-                    f"検出した {len(segs)} 区間で現在の {len(self.utts)} 行を"
-                    "置き換えます (入力済みの台詞は消えます)。よろしいですか？"):
-                return
-        self.utts = clips.from_segments(segs, self.var_lang.get())
-        self.sel_row = None
-        self._sync_all()
-        self.var_status.set(f"{len(segs)} 区間を取り込みました。各行に台詞を入力してください。")
-
     def on_bulk_paste(self):
         dlg = BulkPasteDialog(self)
         if dlg.result is None:
@@ -1087,9 +987,6 @@ class App(ttk.Frame):
             return self.loaded_tl.total_sec, self.loaded_tl.frames
         return None
 
-    def _out_lang(self):
-        return "en" if self.var_outlang.get() == "English" else "ja"
-
     def _sync_outputs(self, *_):
         self._rebuild_ref_entries()
         totals = self._totals()
@@ -1098,10 +995,16 @@ class App(ttk.Frame):
         total, frames = totals
         if self.samples is not None:
             self.wave.set_marker(total)
-        n_img = int(self.var_nimg.get())
+
         wav_name = os.path.basename(self.wav_path) if self.wav_path else (
             os.path.basename(self.loaded_tl.wav_path)
             if self.loaded_tl and self.loaded_tl.wav_path else "-")
+
+        brief = render_brief(self.utts, total, frames, wav_name,
+                             [v.get() for v in self.ref_pic_vars],
+                             self.ref_audio_var.get())
+        self.txt_brief.delete("1.0", "end")
+        self.txt_brief.insert("1.0", brief)
 
         n_empty = sum(1 for u in self.utts if u.start is not None and not u.text)
         n_norange = sum(1 for u in self.utts if u.start is None)
@@ -1112,27 +1015,55 @@ class App(ttk.Frame):
                 parts.append(f"台詞未入力 {n_empty} 行")
             if n_norange:
                 parts.append(f"範囲未設定 {n_norange} 行")
-            note = "※ " + " / ".join(parts) + " が残っている。埋めてから使うこと。"
-
-        lang = self._out_lang()
-        sc = render_scaffold_for_llm(self.utts, total, frames, wav_name,
-                                     n_img, note, out_lang=lang)
-        pr = render_skeleton_for_llm(self.utts, total, n_img, out_lang=lang)
-        for widget, text in ((self.out_scaffold, sc), (self.out_prompt, pr)):
-            widget.delete("1.0", "end")
-            widget.insert("1.0", text)
-
+            note = "  ⚠ " + " / ".join(parts)
         done = sum(1 for u in self.utts if u.usable())
         self.var_status.set(
             f"発話 {len(self.utts)} 行 (入力済み {done}) — "
-            f"動画長 {total:.3f} 秒 ({frames} フレーム)"
-            + (f"  {note}" if note else ""))
+            f"動画長 {total:.3f} 秒 ({frames} フレーム)" + note)
 
     def copy(self, widget):
         text = widget.get("1.0", "end-1c")
         self.clipboard_clear()
         self.clipboard_append(text)
         self.var_status.set("クリップボードにコピーしました。")
+
+    # -- LLM プロンプト ------------------------------------------------------
+
+    def on_open_spec(self):
+        path = filedialog.askopenfilename(
+            title="仕様書 (LLM のシステムプロンプト) を選択",
+            filetypes=[("テキスト", "*.txt *.md"), ("すべて", "*.*")])
+        if not path:
+            return
+        self.spec_path = path
+        self._update_spec_label()
+        self.var_status.set(f"仕様書: {path}")
+
+    def copy_spec_with_brief(self):
+        """仕様書の全文 + ブリーフをひとかたまりでコピーする。"""
+        brief = self.txt_brief.get("1.0", "end-1c")
+        if not brief.strip():
+            messagebox.showwarning("出力がありません",
+                                   "先に wav (またはタイムライン) を読み込んでください。")
+            return
+        if not self.spec_path or not os.path.isfile(self.spec_path):
+            self.clipboard_clear()
+            self.clipboard_append(brief)
+            messagebox.showwarning(
+                "仕様書が見つかりません",
+                f"{SPEC_FILENAME} が未選択のため、ブリーフのみコピーしました。\n"
+                "「仕様書を開く…」で場所を指定してください。")
+            return
+        try:
+            with open(self.spec_path, encoding="utf-8") as fh:
+                spec = fh.read().rstrip()
+        except OSError as exc:
+            messagebox.showerror("読み込みエラー", f"{self.spec_path}: {exc}")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(spec + "\n\n---\n\n" + brief)
+        self.var_status.set(
+            "仕様書＋ブリーフをコピーしました。そのまま LLM に貼り付けてください。")
 
     # -- タイムラインの保存 / 読込 -------------------------------------------
 
@@ -1231,13 +1162,11 @@ class App(ttk.Frame):
                 self._show_subst(res)
                 messagebox.showwarning(
                     "差し替えの手がかりがありません",
-                    "LLM 出力の detailed_description に \"At M:SS.mmm\" 形式の\n"
-                    "時刻も <d> タグの台詞も見つかりませんでした。\n\n"
-                    "Auto-Prompter が Ref2VA 形式 (REF2V モード) で出力しているか\n"
-                    "確認し、シードを変えて生成し直してください。\n"
-                    "プロンプト側の骨組み ([ ] を置き換える形式) を守らせるのが確実です。")
+                    "LLM 出力の detailed_description に <d> タグの台詞が\n"
+                    "見つかりませんでした。6 フィールド形式で出力されているか\n"
+                    "確認し、生成し直してください。")
                 self.var_status.set(
-                    "差し替えできませんでした (出力に At 時刻 / <d> が見つからない)。")
+                    "差し替えできませんでした (出力に <d> が見つからない)。")
                 return
             maps = MappingDialog(self, res).result
             if maps is None:
@@ -1278,50 +1207,6 @@ class App(ttk.Frame):
         header = "" if tl is not None else "(タイムラインなし: 書式チェックのみ)\n"
         self.txt_valres.insert("1.0", header + render_report(findings))
 
-    # -- モデル比較 ----------------------------------------------------------
-
-    def on_cmp_paste(self):
-        dlg = PasteDialog(self)
-        if dlg.result is None:
-            return
-        name, text = dlg.result
-        self.cmp_entries.append((name, text))
-        self.lst_cmp.insert("end", name)
-
-    def on_cmp_file(self):
-        paths = filedialog.askopenfilenames(
-            title="モデル出力ファイルを選択",
-            filetypes=[("テキスト", "*.txt"), ("すべて", "*.*")])
-        for p in paths:
-            try:
-                with open(p, encoding="utf-8") as fh:
-                    text = fh.read()
-            except Exception as exc:
-                messagebox.showerror("読み込みエラー", f"{p}: {exc}")
-                continue
-            name = os.path.splitext(os.path.basename(p))[0]
-            self.cmp_entries.append((name, text))
-            self.lst_cmp.insert("end", name)
-
-    def on_cmp_del(self):
-        sel = list(self.lst_cmp.curselection())
-        for i in reversed(sel):
-            self.lst_cmp.delete(i)
-            del self.cmp_entries[i]
-
-    def on_compare(self):
-        if not self.cmp_entries:
-            messagebox.showwarning("比較対象なし", "モデル出力を追加してください。")
-            return
-        tl = self.current_timeline()
-        reports = compare_outputs(self.cmp_entries, tl,
-                                  expect_na=not self.var_nona.get())
-        out = render_table(reports) + "\n\n" + render_details(reports)
-        if tl is None:
-            out = "(タイムラインなし: 書式チェックのみ)\n" + out
-        self.txt_cmpres.delete("1.0", "end")
-        self.txt_cmpres.insert("1.0", out)
-
 
 class BulkPasteDialog(tk.Toplevel):
     """台詞を 1 行 1 発話でまとめて貼り付ける (行の並び順に流し込む)。"""
@@ -1357,43 +1242,6 @@ class BulkPasteDialog(tk.Toplevel):
         self.destroy()
 
 
-class PasteDialog(tk.Toplevel):
-    """名前を付けてモデル出力を貼り付けるだけの小さなダイアログ。"""
-
-    def __init__(self, master):
-        super().__init__(master)
-        self.title("モデル出力を追加")
-        self.result = None
-        self.columnconfigure(1, weight=1)
-        self.rowconfigure(1, weight=1)
-
-        ttk.Label(self, text="名前:").grid(row=0, column=0, sticky="w",
-                                           padx=8, pady=(8, 2))
-        self.ent = ttk.Entry(self)
-        self.ent.grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 2))
-        self.ent.insert(0, f"model{master.lst_cmp.size() + 1}")
-
-        self.txt = tk.Text(self, width=80, height=20, wrap="word")
-        self.txt.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=8)
-
-        bar = ttk.Frame(self)
-        bar.grid(row=2, column=0, columnspan=2, sticky="e", padx=8, pady=8)
-        ttk.Button(bar, text="追加", command=self.on_ok).pack(side="left")
-        ttk.Button(bar, text="キャンセル", command=self.destroy).pack(
-            side="left", padx=(6, 0))
-
-        self.transient(master)
-        self.grab_set()
-        self.wait_window()
-
-    def on_ok(self):
-        text = self.txt.get("1.0", "end-1c")
-        name = self.ent.get().strip() or "model"
-        if text.strip():
-            self.result = (name, text)
-        self.destroy()
-
-
 class MappingDialog(tk.Toplevel):
     """個数不一致のときに、人間が発話と出現の対応を選ぶダイアログ。
 
@@ -1409,14 +1257,11 @@ class MappingDialog(tk.Toplevel):
         self.res = res
 
         utts = res.utterances
-        need_ts = len(res.at_occs) != len(utts)
+        need_ts = len(res.at_occs) != len(utts) and res.at_occs
         need_d = len(res.d_occs) != len(utts)
 
         head = ("検出された出現と実測の発話の個数が食い違っています。\n"
                 "発話ごとに、どの出現を置き換えるかを選んでください。")
-        if need_ts and not res.at_occs:
-            head += ("\n⚠ \"At M:SS.mmm\" 形式の時刻が出力に 1 つもありません。"
-                     "時刻は置換できないため、再生成を推奨します。")
         if need_d and not res.d_occs:
             head += ("\n⚠ <d> タグの台詞が出力に 1 つもありません。"
                      "台詞は置換できないため、再生成を推奨します。")
