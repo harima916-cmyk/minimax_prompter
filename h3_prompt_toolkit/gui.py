@@ -13,17 +13,19 @@
 from __future__ import annotations
 
 import os
+import queue
+import threading
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from .grid import FPS, grid_candidates, comfy_float_hint
 from .audio import read_wav, read_wav_raw_stereo, write_wav_pcm16, pad_to_seconds
 from .timeline import (Timeline, Utterance, parse_lines, parse_ts, fmt_ts)
-from .scaffold import (render_brief, render_duration_note,
+from .scaffold import (render_brief, render_duration_note, RECOMMENDED_SETTINGS,
                        DEFAULT_PIC1_DESC, DEFAULT_PIC_DESC, DEFAULT_AUDIO_DESC)
 from .substitute import substitute
 from .validate import validate, render_report
-from . import clips
+from . import clips, llm_client
 
 APP_TITLE = "MiniMax-H3 強制音声プロンプトビルダー"
 
@@ -357,6 +359,9 @@ class App(ttk.Frame):
         self.sel_row = None         # 選択中の行 index (1 始まり)
         self.player = clips.Player()
         self.spec_path = _find_default_spec()
+        self.llm_settings = llm_client.load_settings()
+        self._llm_thread = None
+        self._llm_queue = queue.Queue()
 
         self._build_file_row()
         self._build_grid_row()
@@ -544,12 +549,18 @@ class App(ttk.Frame):
         ttk.Label(spec, textvariable=self.var_spec, foreground="#333").pack(
             side="left", padx=(8, 0))
         self._update_spec_label()
+        self.var_anchor = tk.BooleanVar(value=False)
+        ttk.Checkbutton(spec, text="First-frame anchor (AddGuide) を使う",
+                        variable=self.var_anchor,
+                        command=self._sync_outputs).pack(side="right")
 
         self.refs_frame = ttk.LabelFrame(
-            t, text="参照の説明 (ブリーフに入る。英語で簡潔に)", padding=4)
+            t, text="参照の説明 (ブリーフに入る。英語で簡潔に。"
+                    "画像は LM Studio 送信時に添付される)", padding=4)
         self.refs_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.refs_frame.columnconfigure(1, weight=1)
         self.ref_pic_vars = []
+        self.ref_img_vars = []
         self.ref_audio_var = tk.StringVar(value=DEFAULT_AUDIO_DESC)
         self._ref_count = 0
         self._rebuild_ref_entries()
@@ -566,13 +577,50 @@ class App(ttk.Frame):
         self.txt_brief = tk.Text(t, wrap="word", undo=True, height=10)
         self.txt_brief.grid(row=5, column=0, columnspan=2, sticky="nsew")
 
-        ttk.Button(t, text="仕様書＋ブリーフをまとめてコピー (LLM 貼り付け用)",
+        send = ttk.Frame(t)
+        send.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.btn_send = ttk.Button(
+            send, text="▶ LM Studio に送って [C][D] まで実行",
+            command=self.on_send_to_llm)
+        self.btn_send.pack(side="left")
+        ttk.Button(send, text="送信先…", command=self.on_edit_endpoint).pack(
+            side="left", padx=(6, 0))
+        self.var_llm = tk.StringVar()
+        ttk.Label(send, textvariable=self.var_llm, foreground="#666").pack(
+            side="left", padx=(8, 0))
+        self._update_llm_label()
+
+        ttk.Button(t, text="仕様書＋ブリーフをまとめてコピー (手貼り用)",
                    command=self.copy_spec_with_brief).grid(
-            row=6, column=0, sticky="ew")
+            row=7, column=0, sticky="ew")
         ttk.Button(t, text="ブリーフのみコピー",
                    command=lambda: self.copy(self.txt_brief)).grid(
-            row=6, column=1, sticky="ew")
+            row=7, column=1, sticky="ew")
         nb.add(t, text="LLM プロンプト")
+
+    def _update_llm_label(self):
+        s = self.llm_settings
+        self.var_llm.set(f"{s.get('model')} @ {s.get('endpoint')}")
+
+    def on_edit_endpoint(self):
+        endpoint = simpledialog.askstring(
+            "送信先", "LM Studio のエンドポイント:",
+            initialvalue=self.llm_settings.get("endpoint"), parent=self)
+        if endpoint is None:
+            return
+        model = simpledialog.askstring(
+            "モデル", "モデル名 (LM Studio に読み込んでいるもの):",
+            initialvalue=self.llm_settings.get("model"), parent=self)
+        if model is None:
+            return
+        self.llm_settings["endpoint"] = endpoint.strip()
+        self.llm_settings["model"] = model.strip()
+        try:
+            path = llm_client.save_settings(self.llm_settings)
+            self.var_status.set(f"送信先を保存しました: {os.path.basename(path)}")
+        except OSError as exc:
+            messagebox.showerror("保存エラー", str(exc))
+        self._update_llm_label()
 
     def _update_spec_label(self):
         if self.spec_path:
@@ -581,14 +629,16 @@ class App(ttk.Frame):
             self.var_spec.set(f"仕様書: 未選択 ({SPEC_FILENAME} が見つかりません)")
 
     def _rebuild_ref_entries(self):
-        """参照画像の枚数に合わせて説明の入力欄を作り直す (入力値は保持)。"""
+        """参照画像の枚数に合わせて説明と画像パスの欄を作り直す (値は保持)。"""
         n = max(1, int(self.var_nimg.get()))
         if n == self._ref_count:
             return
         old = [v.get() for v in self.ref_pic_vars]
+        old_img = [v.get() for v in self.ref_img_vars]
         for child in self.refs_frame.winfo_children():
             child.destroy()
         self.ref_pic_vars = []
+        self.ref_img_vars = []
         for i in range(1, n + 1):
             ttk.Label(self.refs_frame, text=f"<Picture {i}> is").grid(
                 row=i - 1, column=0, sticky="e")
@@ -598,11 +648,33 @@ class App(ttk.Frame):
             ttk.Entry(self.refs_frame, textvariable=var).grid(
                 row=i - 1, column=1, sticky="ew", padx=(4, 0), pady=1)
             self.ref_pic_vars.append(var)
+
+            img = tk.StringVar(value=old_img[i - 1] if i - 1 < len(old_img) else "")
+            img.trace_add("write", lambda *a: self._sync_outputs())
+            self.ref_img_vars.append(img)
+            box = ttk.Frame(self.refs_frame)
+            box.grid(row=i - 1, column=2, sticky="w", padx=(6, 0))
+            ttk.Button(box, text="画像…", width=6,
+                       command=lambda k=i - 1: self.on_pick_image(k)).pack(side="left")
+            ttk.Label(box, textvariable=img, foreground="#666",
+                      width=18, anchor="w").pack(side="left", padx=(4, 0))
         ttk.Label(self.refs_frame, text="<Audio 1> is").grid(
             row=n, column=0, sticky="e")
         ttk.Entry(self.refs_frame, textvariable=self.ref_audio_var).grid(
             row=n, column=1, sticky="ew", padx=(4, 0), pady=1)
         self._ref_count = n
+
+    def on_pick_image(self, index):
+        path = filedialog.askopenfilename(
+            title=f"<Picture {index + 1}> の画像を選択",
+            filetypes=[("画像", "*.png *.jpg *.jpeg *.webp"), ("すべて", "*.*")])
+        if not path:
+            return
+        self.ref_img_vars[index].set(path)
+        self.var_status.set(f"<Picture {index + 1}>: {os.path.basename(path)}")
+
+    def image_paths(self):
+        return [v.get() for v in self.ref_img_vars if v.get()]
 
     def _build_substitute_tab(self, nb):
         t = ttk.Frame(nb, padding=4)
@@ -1007,10 +1079,15 @@ class App(ttk.Frame):
             os.path.basename(self.loaded_tl.wav_path)
             if self.loaded_tl and self.loaded_tl.wav_path else "-")
 
+        tts_sec = (len(self.samples) / self.sr) if self.samples is not None else None
         brief = render_brief(self.utts, total, frames, wav_name,
                              [v.get() for v in self.ref_pic_vars],
                              self.ref_audio_var.get(),
-                             scenario=self.txt_scenario.get("1.0", "end-1c"))
+                             scenario=self.txt_scenario.get("1.0", "end-1c"),
+                             anchor=self.var_anchor.get(),
+                             image_names=[os.path.basename(v.get())
+                                          for v in self.ref_img_vars if v.get()],
+                             tts_seconds=tts_sec)
         self.txt_brief.delete("1.0", "end")
         self.txt_brief.insert("1.0", brief)
 
@@ -1073,6 +1150,86 @@ class App(ttk.Frame):
         self.var_status.set(
             "仕様書＋ブリーフをコピーしました。そのまま LLM に貼り付けてください。")
 
+    # -- LM Studio へ送る ----------------------------------------------------
+
+    def read_spec(self):
+        """仕様書の全文。読めなければ None (呼び出し側が案内する)。"""
+        if not self.spec_path or not os.path.isfile(self.spec_path):
+            return None
+        try:
+            with open(self.spec_path, encoding="utf-8") as fh:
+                return fh.read().rstrip()
+        except OSError:
+            return None
+
+    def on_send_to_llm(self):
+        if self._llm_thread is not None and self._llm_thread.is_alive():
+            self.var_status.set("LM Studio に送信中です。完了までお待ちください。")
+            return
+        brief = self.txt_brief.get("1.0", "end-1c")
+        if not brief.strip():
+            messagebox.showwarning("出力がありません",
+                                   "先に wav (またはタイムライン) を読み込んでください。")
+            return
+        spec = self.read_spec()
+        if spec is None:
+            messagebox.showwarning(
+                "仕様書が見つかりません",
+                f"{SPEC_FILENAME} が読めません。「仕様書を開く…」で指定してください。")
+            return
+
+        settings = dict(RECOMMENDED_SETTINGS)
+        settings.update(self.llm_settings)
+        try:
+            body = llm_client.build_request(spec, brief, self.image_paths(),
+                                            settings)
+        except llm_client.LLMError as exc:
+            messagebox.showerror("画像を読めません", str(exc))
+            return
+
+        endpoint = self.llm_settings.get("endpoint", llm_client.DEFAULT_ENDPOINT)
+        n_img = len(self.image_paths())
+        self.btn_send["state"] = "disabled"
+        self.var_status.set(
+            f"LM Studio に送信中… ({settings.get('model')} / 画像 {n_img} 枚)")
+
+        def worker():
+            try:
+                text = llm_client.send(body, endpoint=endpoint)
+                self._llm_queue.put(("ok", text))
+            except llm_client.LLMError as exc:
+                self._llm_queue.put(("error", str(exc)))
+            except Exception as exc:            # noqa: BLE001 — UI に出して続行
+                self._llm_queue.put(("error", f"想定外のエラー: {exc}"))
+
+        self._llm_thread = threading.Thread(target=worker, daemon=True)
+        self._llm_thread.start()
+        self.after(200, self._poll_llm)
+
+    def _poll_llm(self):
+        try:
+            kind, payload = self._llm_queue.get_nowait()
+        except queue.Empty:
+            if self._llm_thread is not None and self._llm_thread.is_alive():
+                self.after(200, self._poll_llm)
+            else:
+                self.btn_send["state"] = "normal"
+            return
+        self.btn_send["state"] = "normal"
+        if kind == "error":
+            self.var_status.set("LM Studio への送信に失敗しました。")
+            messagebox.showerror("送信エラー", payload)
+            return
+        self.txt_llm.delete("1.0", "end")
+        self.txt_llm.insert("1.0", payload)
+        self.nb.select(1)                       # 差し替え [C] タブへ
+        self.var_status.set("応答を受け取りました。差し替え [C] を実行します…")
+        self.on_substitute()
+        if self.txt_subst.get("1.0", "end-1c").strip():
+            self.on_pull_subst()
+            self.on_validate()
+            self.nb.select(2)                   # 検証 [D] タブへ
+
     # -- タイムラインの保存 / 読込 -------------------------------------------
 
     def current_timeline(self):
@@ -1086,8 +1243,10 @@ class App(ttk.Frame):
                         wav_path=wav_path, n_images=int(self.var_nimg.get()),
                         ref_texts={
                             "pictures": [v.get() for v in self.ref_pic_vars],
+                            "image_paths": [v.get() for v in self.ref_img_vars],
                             "audio": self.ref_audio_var.get(),
                             "scenario": self.txt_scenario.get("1.0", "end-1c"),
+                            "anchor": bool(self.var_anchor.get()),
                         })
 
     def on_save_tl(self):
@@ -1137,10 +1296,14 @@ class App(ttk.Frame):
         pics = (tl.ref_texts or {}).get("pictures") or []
         for var, text in zip(self.ref_pic_vars, pics):
             var.set(text)
+        for var, path in zip(self.ref_img_vars,
+                             (tl.ref_texts or {}).get("image_paths") or []):
+            var.set(path)
         if (tl.ref_texts or {}).get("audio"):
             self.ref_audio_var.set(tl.ref_texts["audio"])
         self.txt_scenario.delete("1.0", "end")
         self.txt_scenario.insert("1.0", (tl.ref_texts or {}).get("scenario", ""))
+        self.var_anchor.set(bool((tl.ref_texts or {}).get("anchor", False)))
         self._sync_all()
         self.var_status.set(
             "タイムラインを読み込みました。wav が無いため波形と再生は使えません。")

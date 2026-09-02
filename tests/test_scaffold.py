@@ -44,6 +44,23 @@ class TestEnglishScaffold(unittest.TestCase):
         self.assertIn("- NOTE: 確認すること", sc)
 
 
+class TestSkeletonMarkers(unittest.TestCase):
+    """A6: 強制音声では audio reuse / fully_copy が正。"""
+
+    def test_english_skeleton(self):
+        tl = demo_tl()
+        pr = render_prompt_skeleton_en(tl.utterances, tl.total_sec, tl.n_images)
+        self.assertIn("[reference generation + audio reuse]", pr)
+        self.assertIn("<Audio 1>: fully_copy", pr)
+        self.assertNotIn("fully_preserved — the audio", pr)
+
+    def test_japanese_skeleton(self):
+        tl = demo_tl()
+        pr = render_prompt_skeleton(tl.utterances, tl.total_sec, tl.n_images)
+        self.assertIn("[reference generation + audio reuse]", pr)
+        self.assertIn("<Audio 1>: fully_copy", pr)
+
+
 class TestEnglishSkeleton(unittest.TestCase):
     def setUp(self):
         self.tl = demo_tl()
@@ -108,9 +125,9 @@ class TestBrief(unittest.TestCase):
         self.assertIn("Silent tail after the last utterance: 0.854 s.", self.brief)
 
     def test_verbatim_transcript_lines(self):
-        self.assertIn("[1] 0:00.512 - 0:02.104 (S1) "
+        self.assertIn("[1] 00:00.512 - 00:02.104 (S1) "
                       "<d>[Japanese] こんにちは、今日はいい天気ですね。</d>", self.brief)
-        self.assertIn("[2] 0:03.008 - 0:05.021 (S2) "
+        self.assertIn("[2] 00:03.008 - 00:05.021 (S2) "
                       "<d>[Japanese] そうですね、散歩に行きましょう。</d>", self.brief)
 
     def test_references_included(self):
@@ -134,6 +151,38 @@ class TestBrief(unittest.TestCase):
     def test_scenario_default_latitude(self):
         # 未記入なら「創作裁量で埋めよ」の一文が入る
         self.assertIn("Scenario: not specified", self.brief)
+
+    def test_workflow_name_and_anchor_off(self):
+        self.assertIn("ComfyUI workflow: "
+                      "video_minimax_h3_r2v_forced_audio_lora_v2", self.brief)
+        self.assertIn("First-frame anchor: OFF", self.brief)
+        self.assertIn("do not use the keyframe completion task type",
+                      self.brief)
+
+    def test_image_names_and_tts_length(self):
+        brief = render_brief(self.tl.utterances, self.tl.total_sec,
+                             self.tl.frames, "voice_141f.wav",
+                             image_names=["chr1047_face.png", "park.png"],
+                             tts_seconds=4.812)
+        self.assertIn("Attached image files, in label order: "
+                      "<Picture 1> = chr1047_face.png, <Picture 2> = park.png",
+                      brief)
+        self.assertIn("TTS length before padding: 4.812 s.", brief)
+        self.assertIn("Duration is already fixed by the toolkit; "
+                      "do not suggest one.", brief)
+
+    def test_image_names_omitted_when_absent(self):
+        self.assertNotIn("Attached image files", self.brief)
+        self.assertNotIn("TTS length before padding", self.brief)
+        # Duration 宣言は常に入れる (LLM の assumption 行を抑える)
+        self.assertIn("Duration is already fixed by the toolkit", self.brief)
+
+    def test_anchor_on(self):
+        brief = render_brief(self.tl.utterances, self.tl.total_sec,
+                             self.tl.frames, "voice.wav", anchor=True)
+        self.assertIn("First-frame anchor: ON", brief)
+        self.assertIn("keyframe completion", brief)
+        self.assertIn("<Picture 1> is the actual first frame", brief)
 
 
 class TestReferenceHeader(unittest.TestCase):

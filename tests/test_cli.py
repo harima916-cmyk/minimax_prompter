@@ -3,7 +3,6 @@
 
 import contextlib
 import io
-import json
 import os
 import shutil
 import tempfile
@@ -42,28 +41,10 @@ class TestCli(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.wav = os.path.join(self.dir, "voice.wav")
         make_demo_wav(self.wav)
-        self.lines = os.path.join(self.dir, "lines.txt")
-        with open(self.lines, "w", encoding="utf-8") as fh:
-            fh.write("こんにちは\nS2: そうですね\n")
         self.tl_json = os.path.join(_path.FIXTURES, "timeline_demo.json")
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
-
-    def test_measure_and_save(self):
-        save = os.path.join(self.dir, "tl.json")
-        code, out, err = run_cli("measure", "--wav", self.wav,
-                                 "--lines", self.lines,
-                                 "--save-timeline", save, "--json")
-        self.assertEqual(code, 0)
-        self.assertIn("[1]", out)
-        data = json.loads(out[out.index("{"):])
-        self.assertEqual(len(data["utterances"]), 2)
-        self.assertEqual(data["utterances"][1]["speaker"], "S2")
-        self.assertTrue(os.path.exists(save))
-        # 3.2 秒 → 82f (17*4+5=73f は 3.042s で足りず、 k=5 → 90f=3.75s…計算で確認)
-        self.assertEqual(data["frames"] % 17, 5)
-        self.assertGreaterEqual(data["total_sec"], 3.2)
 
     def test_pad(self):
         code, out, err = run_cli("pad", "--wav", self.wav)
@@ -132,7 +113,7 @@ class TestCli(unittest.TestCase):
         code, out, err = run_cli("substitute", "--timeline", self.tl_json,
                                  src, "--ts-map", "1,3")
         self.assertEqual(code, 0)
-        self.assertIn("At 0:00.512", out)
+        self.assertIn("At 00:00.512", out)
 
     def test_validate_exit_codes(self):
         good = os.path.join(self.dir, "good.txt")
@@ -165,7 +146,9 @@ class TestCli(unittest.TestCase):
     def test_settings(self):
         code, out, _ = run_cli("settings")
         self.assertEqual(code, 0)
-        self.assertIn("n_ctx", out)
+        self.assertIn("qwen3.8-27b", out)
+        self.assertIn("temperature: 0.7", out)
+        self.assertIn("reasoning_effort", out)
         self.assertIn("16384", out)
 
 

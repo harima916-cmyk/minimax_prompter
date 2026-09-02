@@ -1,13 +1,15 @@
 subject_definitions:
-<Subject 1> is the woman whose appearance comes from <Picture 1>: shoulder-length black hair, a blue cardigan over a white blouse, and small silver stud earrings.
+<Picture 1> is the actual first frame of the target video: a medium close-up of the woman on the park path, turned three-quarters toward the camera in clear mid-morning daylight.
+<Subject 1> is that woman: shoulder-length black hair, a blue cardigan over a white blouse, and small silver stud earrings.
 <Subject 2> is the man who joins her partway through: a grey jacket over a dark shirt, short hair, slightly taller than <Subject 1>.
 <Picture 2> is the sunlit park path lined with cherry trees, with a low wooden fence along its left edge.
 <Audio 1> (ref_audio_0): the voice-timbre reference for <Subject 1> (S1), a mid-range female voice at a calm pace, and the target video's complete final audio track. <Subject 2> (S2) speaks with a lower male voice at the same relaxed rate.
 
 summary:
-[reference generation + audio reuse] The target video shows <Subject 1> standing on the park path from <Picture 2> and exchanging a short greeting with <Subject 2>, who walks in from the right, while <Audio 1> is reused unchanged as the complete final audio track.
+[keyframe completion + reference generation + audio reuse] The target video begins from <Picture 1> as its first frame and shows <Subject 1> standing on the park path from <Picture 2> and exchanging a short greeting with <Subject 2>, who walks in from the right, while <Audio 1> is reused unchanged as the complete final audio track.
 
 retention_analysis:
+<Picture 1> (appears in [Shot 1]): fully_preserved - the first frame, its framing, lighting, and composition are retained exactly.
 <Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - her identity, shoulder-length black hair, blue cardigan, white blouse, and silver stud earrings are retained exactly.
 <Subject 2> (appears in [Shot 2]): fully_preserved - the grey jacket, dark shirt, and short hair are retained.
 <Picture 2>: fully_preserved - the cherry-tree path, wooden fence, and daylight direction are retained.
@@ -15,7 +17,7 @@ retention_analysis:
 
 detailed_description:
 The target video is live-action and cinematic, lit by clear mid-morning daylight that falls from the left and picks out the texture of the cardigan wool and the loose strands at her temple.
-[Shot 1] A medium close-up frames <Subject 1> standing on the park path from <Picture 2>, turned three-quarters toward the camera, the cherry trees and wooden fence receding behind her. Her hands rest loosely at her sides and her weight settles onto her left foot. The camera holds a static shot so her face stays legible for the whole line.
+[Shot 1] The target video begins from <Picture 1>: a medium close-up of <Subject 1> standing on the park path from <Picture 2>, turned three-quarters toward the camera, the cherry trees and wooden fence receding behind her. Her hands rest loosely at her sides and her weight settles onto her left foot. The camera holds a static shot so her face stays legible for the whole line.
 At 00:00.512, she lifts her chin, her eyes widen slightly in recognition, and her lips part. S1 says, <d>[Japanese] こんにちは、今日はいい天気ですね。</d>. Her lip movements are perfectly synchronized with her words. As the line ends she closes her mouth, and a small smile settles across her face while she blinks once and lets her shoulders drop.
 [Shot 2] At 00:03.008, the camera cuts to a wider two-shot that keeps <Subject 1> on the left of frame and brings <Subject 2> in from the right, both heads still large enough in frame for their mouths to read clearly. He slows as he reaches her, turns to face the same direction along the path, and lets his hands fall to his sides.
 At 00:03.008, he tips his head toward the trees ahead of them. S2 says, <d>[Japanese] そうですね、散歩に行きましょう。</d>. His lip movements stay synchronized with the line while <Subject 1> nods twice in agreement beside him. Petals drift across the frame behind them, carried on a light breeze that also stirs the hem of her cardigan.

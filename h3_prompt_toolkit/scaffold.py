@@ -9,12 +9,15 @@ from __future__ import annotations
 from .grid import FPS, comfy_float_hint
 from .timeline import fmt_ts, Timeline
 
-# ComfyUI 側の設定と食い違うと事故になるので、ツール側に持たせて出力に併記する。
+# LLM 側 (LM Studio + Qwen3.8-27B) の設定。ツール側に持たせて出力に併記する。
 RECOMMENDED_SETTINGS = {
-    "n_ctx": 16384,        # 16k 以上を推奨 (公式ガイド + キャプション + タイムラインで 7680 では溢れる)
-    "temperature": 0.2,    # 構造化出力なので高くしない。0.2 前後から
-    "fps": FPS,            # 24 固定
-    "lang": "Japanese",    # 言語タグ既定
+    "model": "qwen3.8-27b",      # vision。参照画像を添付して読ませる
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "reasoning_effort": "low",   # low〜medium
+    "n_ctx": 16384,              # 仕様書 + ブリーフが入る余裕を見る
+    "fps": FPS,                  # 24 固定
+    "lang": "Japanese",          # 言語タグ既定
 }
 
 
@@ -70,14 +73,14 @@ def render_prompt_skeleton(rows, total_sec, n_images):
              "画面内か否か。台詞内容はここに書かない]")
     L.append("")
     L.append("summary:")
-    L.append("[reference generation] [目標映像の 1 段落要約。どの参照が"
-             "何を規定するかを明示する]")
+    L.append("[reference generation + audio reuse] [目標映像の 1 段落要約。"
+             "どの参照が何を規定するかを明示する]")
     L.append("")
     L.append("retention_analysis:")
     for i in range(1, n_images + 1):
         L.append(f"<Picture {i}>: fully_preserved — [何をどう保持するか]")
-    L.append("<Audio 1>: audio reuse — fully_preserved — "
-             "音声信号をそのまま再利用する。")
+    L.append("<Audio 1>: fully_copy — "
+             "音声信号をそのまま最終音声トラックとして再利用する。")
     L.append("")
     L.append("detailed_description:")
     L.append("[Shot 1] [全体の映像スタイルと初期構図。カメラワークは "
@@ -183,14 +186,14 @@ def render_prompt_skeleton_en(rows, total_sec, n_images):
              "Do not write the dialogue content here]")
     L.append("")
     L.append("summary:")
-    L.append("[reference generation] [one-paragraph summary of the target video, "
-             "stating which reference governs what]")
+    L.append("[reference generation + audio reuse] [one-paragraph summary of the "
+             "target video, stating which reference governs what]")
     L.append("")
     L.append("retention_analysis:")
     for i in range(1, n_images + 1):
         L.append(f"<Picture {i}>: fully_preserved — [what is preserved, and how]")
-    L.append("<Audio 1>: audio reuse — fully_preserved — "
-             "the audio signal is reused as-is.")
+    L.append("<Audio 1>: fully_copy — the audio signal is reused 1:1 as the "
+             "target video's complete final audio track.")
     L.append("")
     L.append("detailed_description:")
     L.append("[Shot 1] [overall visual style and initial composition; "
@@ -238,9 +241,10 @@ def render_skeleton_from_timeline(tl: Timeline, out_lang: str = "en"):
 def render_duration_note(wav_name: str, frames: int) -> str:
     """パディング済み wav に添える、ComfyUI へ貼り付ける数値のメモ。
 
-    公式テンプレートの Float (Duration) → Math Expression (17k+5 へ切り上げ)
-    → length という配線を前提に、正確な秒数と、Float ウィジェットが
-    小数第 1 位までしか受けない場合の安全値 (切り捨て 1 桁) を併記する。
+    Float (Duration) → Math Expression (ceil で 17k+5 へ切り上げ) → length
+    という配線が前提。案内する値は切り捨て 1 桁に統一する: 真値 (3 桁) は
+    浮動小数点の誤差で ceil が 1 フレーム余分に上がり、次の枠へ飛ぶことが
+    ある (5.875 → 141.00000000000003 → 158f)。
     """
     exact = frames / FPS
     hint = comfy_float_hint(frames)
@@ -248,33 +252,47 @@ def render_duration_note(wav_name: str, frames: int) -> str:
         f"音声ファイル: {wav_name}",
         f"動画長: {exact:.3f} 秒 = {frames} フレーム @ {FPS}fps",
         "",
-        f"ComfyUI の Float (Duration) に入れる値: {exact:.3f}",
-        f"  小数第 1 位までしか入らない場合:      {hint:.1f}",
-        f"  (どちらもテンプレートの Math Expression が {frames} フレームに丸め上げる)",
+        f"ComfyUI の Float (Duration) に入れる値: {hint:.1f}",
+        f"  (Math Expression が {frames} フレームに丸め上げる。"
+        f"真値 {exact:.3f} は誤差で次の枠に飛ぶことがあるので使わない)",
         "",
         "length を直接入力するワークフローの場合は、秒ではなく"
         f"フレーム数 {frames} を入れること。",
     ])
 
 
+WORKFLOW_NAME = "video_minimax_h3_r2v_forced_audio_lora_v2"
+
+
 def render_brief(utts, total_sec, frames, wav_name,
-                 pic_texts=(), audio_text="", scenario="") -> str:
+                 pic_texts=(), audio_text="", scenario="",
+                 anchor=False, workflow=WORKFLOW_NAME,
+                 image_names=(), tts_seconds=None) -> str:
     """仕様書 (minimax_ref2v_rule.txt) に追記するブリーフ。
 
     仕様書は「ユーザーが強制音声ワークフローだと言ったらモードを切り替え、
     <d> は逐語トランスクリプト」という契約なので、ここでは
-    ① 強制音声である宣言 ② シナリオ (ユーザーの要望そのまま)
-    ③ 参照の説明 ④ 実効尺 (17k+5) ⑤ 実測トランスクリプト を列挙する。
+    ① 強制音声である宣言とワークフロー名 ② First-frame anchor の ON/OFF
+    ③ シナリオ (ユーザーの要望そのまま) ④ 参照の説明 ⑤ 実効尺 (17k+5)
+    ⑥ 実測トランスクリプト を列挙する。
     シナリオは日本語のままでよい — 英語にするのは LLM の仕事。
     """
     usable = [u for u in utts if u.start is not None and u.text]
     L = []
     L.append("# BRIEF — forced-audio job (measured by h3-prompt-toolkit)")
     L.append("")
+    L.append(f"ComfyUI workflow: {workflow}")
     L.append("This job uses the forced-audio / TTS-driven workflow: the supplied "
              "audio file is encoded into the audio latent and frozen with a zero "
              "noise mask, so it becomes the output track verbatim and the video "
              "must lip-sync to it.")
+    if anchor:
+        L.append("First-frame anchor: ON (MiniMaxH3AddGuide). <Picture 1> is the "
+                 "actual first frame of the target video, so the task type "
+                 "includes keyframe completion and [Shot 1] begins from it.")
+    else:
+        L.append("First-frame anchor: OFF. No picture is a concrete frame anchor, "
+                 "so do not use the keyframe completion task type.")
     L.append("")
     scenario = (scenario or "").strip()
     if scenario:
@@ -288,13 +306,20 @@ def render_brief(utts, total_sec, frames, wav_name,
     L.append("References:")
     for line in render_reference_header(list(pic_texts), audio_text).splitlines():
         L.append(f"- {line}")
+    names = [n for n in (image_names or []) if n]
+    if names:
+        pairs = ", ".join(f"<Picture {i}> = {n}" for i, n in enumerate(names, 1))
+        L.append(f"Attached image files, in label order: {pairs}")
     L.append("")
     L.append(f"Forced audio: {wav_name} — effective duration "
              f"{total_sec:.3f} s = {frames} frames @ {FPS} fps (17k+5 grid). "
              f"Every cut timestamp must fall strictly inside it.")
+    if tts_seconds:
+        L.append(f"TTS length before padding: {tts_seconds:.3f} s.")
     if usable:
         tail = total_sec - max(u.end for u in usable if u.end is not None)
         L.append(f"Silent tail after the last utterance: {max(0.0, tail):.3f} s.")
+    L.append("Duration is already fixed by the toolkit; do not suggest one.")
     L.append("")
     L.append("Verbatim transcript, measured from the waveform "
              "(FIXED — reproduce each <d> exactly):")
@@ -314,9 +339,11 @@ def render_settings_note(settings: dict | None = None) -> str:
     if settings:
         s.update(settings)
     return "\n".join([
-        "=== 運用設定 (ComfyUI 側と一致させること) ===",
-        f"n_ctx: {s['n_ctx']} 以上  (7680 では公式ガイド+キャプション+タイムラインで溢れる)",
-        f"temperature: {s['temperature']} 前後から  (構造化出力なので高くしない)",
+        "=== 運用設定 ===",
+        f"LLM: {s['model']}  (LM Studio。vision — 参照画像を添付して読ませる)",
+        f"temperature: {s['temperature']} / top_p: {s['top_p']}",
+        f"reasoning_effort: {s['reasoning_effort']}  (low〜medium)",
+        f"n_ctx: {s['n_ctx']} 以上  (仕様書 + ブリーフが入る余裕を見る)",
         f"fps: {s['fps']} 固定",
         f"言語タグ: {s['lang']} 既定",
     ])

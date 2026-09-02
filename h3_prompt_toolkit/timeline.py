@@ -16,12 +16,17 @@ DEFAULT_LANG = "Japanese"
 
 
 def fmt_ts(sec):
-    """M:SS.mmm 形式。H3 が要求する固定書式。"""
+    """MM:SS.mmm 形式。公式ガイドと ComfyUI テンプレートの例に合わせる。
+
+    H3 のテキストエンコーダは書式をトークンとして読むので、学習分布に
+    寄せて分を 2 桁ゼロ埋めする (0:03.500 ではなく 00:03.500)。
+    読み取り側 (ref2va.TS_STRICT) は 1 桁の分も引き続き受ける。
+    """
     if sec < 0:
         sec = 0.0
     m = int(sec // 60)
     s = sec - m * 60
-    return f"{m}:{s:06.3f}"
+    return f"{m:02d}:{s:06.3f}"
 
 
 _TS = re.compile(r"^\s*(\d{1,3}):(\d{2}(?:\.\d{1,3})?)\s*$")

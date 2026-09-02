@@ -41,13 +41,21 @@ class TestFields(unittest.TestCase):
 
 
 class TestTsFormat(unittest.TestCase):
+    def test_legacy_single_digit_minute_still_accepted(self):
+        # P1 で出力は MM:SS.mmm に統一したが、読み取りは M:SS.mmm も受ける
+        text = _path.fixture("ref2va_drifted.txt")
+        self.assertIn("At 0:00.500", text)
+        findings = validate(text, demo_tl())
+        self.assertEqual(levels(findings, "ts_format"), [])
+
     def test_missing_milliseconds(self):
-        text = _path.fixture("ref2va_good.txt").replace("At 0:00.512,", "At 0:00.5,")
+        text = _path.fixture("ref2va_good.txt").replace("At 00:00.512,", "At 00:00.5,")
         findings = validate(text, demo_tl())
         self.assertIn("error", levels(findings, "ts_format"))
 
     def test_unbalanced_dialogue_tags(self):
-        text = _path.fixture("ref2va_good.txt").replace("</d>. She closes", ". She closes", 1)
+        text = _path.fixture("ref2va_good.txt").replace(
+            "ですね。</d>. Her lip movements", "ですね。. Her lip movements", 1)
         findings = validate(text, demo_tl())
         self.assertIn("error", levels(findings, "ts_format"))
 
@@ -87,14 +95,14 @@ class TestDialogueIdentity(unittest.TestCase):
 
 class TestMonotonicAndDuration(unittest.TestCase):
     def test_decreasing_timestamp(self):
-        text = _path.fixture("ref2va_good.txt").replace("At 0:03.008, the man",
-                                                        "At 0:01.000, the man")
+        text = _path.fixture("ref2va_good.txt").replace("At 00:03.008, he tips",
+                                                        "At 00:01.000, he tips")
         findings = validate(text, demo_tl())
         self.assertIn("error", levels(findings, "monotonic"))
 
     def test_beyond_duration(self):
-        text = _path.fixture("ref2va_good.txt").replace("until 0:05.875",
-                                                        "until 0:06.500")
+        text = _path.fixture("ref2va_good.txt").replace("until 00:05.875",
+                                                        "until 00:06.500")
         findings = validate(text, demo_tl())
         self.assertIn("error", levels(findings, "duration"))
 
@@ -107,8 +115,8 @@ class TestSpeakers(unittest.TestCase):
 
     def test_unknown_extra_speaker(self):
         text = _path.fixture("ref2va_good.txt").replace(
-            "Both walk slowly along the path.",
-            "Both walk slowly along the path. S3 hums quietly.")
+            "Petals drift across the frame",
+            "S3 hums quietly. Petals drift across the frame")
         findings = validate(text, demo_tl())
         self.assertIn("warn", levels(findings, "speakers"))
 
@@ -122,7 +130,8 @@ class TestRefTags(unittest.TestCase):
 
     def test_video_not_connected(self):
         text = _path.fixture("ref2va_good.txt").replace(
-            "reused as-is.", "reused as-is with <Video 1> motion.")
+            "reused unchanged as the complete final audio track.",
+            "reused unchanged, with <Video 1> supplying motion.")
         findings = validate(text, demo_tl())
         self.assertIn("warn", levels(findings, "ref_tags"))
 
@@ -135,7 +144,7 @@ class TestRefTags(unittest.TestCase):
 class TestShots(unittest.TestCase):
     def test_shot1_stamped(self):
         text = _path.fixture("ref2va_good.txt").replace(
-            "[Shot 1] Live-action", "[Shot 1] At 0:00.000, live-action")
+            "[Shot 1] A medium close-up", "[Shot 1] At 00:00.000, a medium close-up")
         findings = validate(text, demo_tl())
         self.assertIn("warn", levels(findings, "shots"))
 
@@ -146,7 +155,7 @@ class TestShots(unittest.TestCase):
 
     def test_later_shot_unstamped(self):
         text = _path.fixture("ref2va_good.txt").replace(
-            "[Shot 2] At 0:03.008, the camera cuts", "[Shot 2] The camera cuts")
+            "[Shot 2] At 00:03.008, the camera cuts", "[Shot 2] The camera cuts")
         findings = validate(text, demo_tl())
         self.assertIn("warn", levels(findings, "shots"))
 
@@ -160,6 +169,184 @@ class TestSoundscape(unittest.TestCase):
         findings = validate(_path.fixture("ref2va_drifted.txt"), demo_tl(),
                             expect_na=False)
         self.assertEqual(levels(findings, "soundscape"), ["info"])
+
+
+class TestTaskTypeAndAudioMarker(unittest.TestCase):
+    """A4: 強制音声モードの FIXED (audio reuse / fully_copy)。"""
+
+    def test_missing_audio_reuse(self):
+        text = _path.fixture("ref2va_good.txt").replace(
+            "[reference generation + audio reuse]", "[reference generation]")
+        findings = validate(text, demo_tl())
+        self.assertIn("error", levels(findings, "task_type"))
+
+    def test_missing_bracketed_task_type(self):
+        text = _path.fixture("ref2va_good.txt").replace(
+            "[reference generation + audio reuse] The target", "The target")
+        findings = validate(text, demo_tl())
+        self.assertIn("error", levels(findings, "task_type"))
+
+    def test_wrong_audio_marker(self):
+        text = _path.fixture("ref2va_good.txt").replace(
+            "<Audio 1>: fully_copy", "<Audio 1>: fully_preserved")
+        findings = validate(text, demo_tl())
+        self.assertIn("error", levels(findings, "audio_marker"))
+
+    def test_missing_audio_line(self):
+        good = _path.fixture("ref2va_good.txt")
+        line = [l for l in good.splitlines() if l.startswith("<Audio 1>: ")][0]
+        findings = validate(good.replace(line + "\n", ""), demo_tl())
+        self.assertIn("error", levels(findings, "audio_marker"))
+
+    def test_good_passes(self):
+        findings = validate(_path.fixture("ref2va_good.txt"), demo_tl())
+        self.assertEqual(levels(findings, "task_type"), [])
+        self.assertEqual(levels(findings, "audio_marker"), [])
+
+
+def anchor_tl(on=True):
+    tl = demo_tl()
+    tl.ref_texts = dict(tl.ref_texts or {})
+    tl.ref_texts["anchor"] = on
+    return tl
+
+
+class TestAnchorConsistency(unittest.TestCase):
+    """P2: First-frame anchor (AddGuide) の ON/OFF とプロンプトの整合。"""
+
+    def setUp(self):
+        self.anchor_text = _path.fixture("ref2va_anchor_on.txt")
+
+    def test_anchor_on_fixture_is_clean(self):
+        findings = validate(self.anchor_text, anchor_tl(True))
+        self.assertEqual(levels(findings, "anchor"), [], render_report(findings))
+        self.assertEqual(counts(findings)[0], 0, render_report(findings))
+
+    def test_anchor_on_requires_keyframe_completion(self):
+        text = self.anchor_text.replace(
+            "[keyframe completion + reference generation + audio reuse]",
+            "[reference generation + audio reuse]")
+        findings = validate(text, anchor_tl(True))
+        self.assertIn("error", levels(findings, "anchor"))
+
+    def test_anchor_on_requires_picture1_fully_preserved(self):
+        text = self.anchor_text.replace(
+            "<Picture 1> (appears in [Shot 1]): fully_preserved -",
+            "<Picture 1> (appears in [Shot 1]): weak_reference -")
+        findings = validate(text, anchor_tl(True))
+        self.assertIn("error", levels(findings, "anchor"))
+
+    def test_anchor_on_missing_picture1_retention_line(self):
+        line = [l for l in self.anchor_text.splitlines()
+                if l.startswith("<Picture 1> (appears")][0]
+        findings = validate(self.anchor_text.replace(line + "\n", ""),
+                            anchor_tl(True))
+        self.assertIn("error", levels(findings, "anchor"))
+
+    def test_anchor_on_wants_begins_from_phrase(self):
+        text = self.anchor_text.replace(
+            "[Shot 1] The target video begins from <Picture 1>:",
+            "[Shot 1] A medium close-up shows the woman,")
+        findings = validate(text, anchor_tl(True))
+        self.assertIn("warn", levels(findings, "anchor"))
+
+    def test_anchor_off_flags_keyframe_completion(self):
+        findings = validate(self.anchor_text, anchor_tl(False))
+        self.assertIn("warn", levels(findings, "anchor"))
+
+    def test_anchor_off_normal_output_is_clean(self):
+        findings = validate(_path.fixture("ref2va_good.txt"), anchor_tl(False))
+        self.assertEqual(levels(findings, "anchor"), [])
+
+    def test_no_timeline_skips_check(self):
+        findings = validate(self.anchor_text, None)
+        self.assertEqual(levels(findings, "anchor"), [])
+
+
+class TestResolutionIndependence(unittest.TestCase):
+    """A4: 精修パスで使い回せるよう、解像度・工程の語を弾く。"""
+
+    def test_resolution_words(self):
+        for word in ("768p", "1344x768", "0.4 MP", "low-res", "upscaled",
+                     "draft", "refinement pass"):
+            text = _path.fixture("ref2va_good.txt").replace(
+                "The camera holds a static shot",
+                f"The camera holds a static shot at {word}")
+            findings = validate(text, demo_tl())
+            self.assertIn("warn", levels(findings, "resolution"),
+                          f"{word} が検出されない")
+
+    def test_good_passes(self):
+        findings = validate(_path.fixture("ref2va_good.txt"), demo_tl())
+        self.assertEqual(levels(findings, "resolution"), [])
+
+
+class TestGuideChecks(unittest.TestCase):
+    """P3: 仕様書 §6 / §10 の機械チェック。"""
+
+    def setUp(self):
+        self.good = _path.fixture("ref2va_good.txt")
+
+    def test_good_is_clean(self):
+        findings = validate(self.good, demo_tl())
+        for check in ("negation", "softness", "length", "lipsync_cue"):
+            self.assertEqual(levels(findings, check), [], render_report(findings))
+
+    def test_negation_words(self):
+        for word in ("no", "not", "never", "without", "avoid"):
+            text = self.good.replace(
+                "The camera holds a static shot",
+                f"The camera holds a static shot with {word} sudden movement")
+            findings = validate(text, demo_tl())
+            self.assertIn("warn", levels(findings, "negation"), word)
+
+    def test_negation_inside_dialogue_is_ignored(self):
+        text = self.good.replace("<d>[Japanese] こんにちは、今日はいい天気ですね。</d>",
+                                 "<d>[English] No, not today.</d>")
+        findings = validate(text, demo_tl())
+        self.assertEqual(levels(findings, "negation"), [])
+
+    def test_softness_words(self):
+        for word in ("shallow depth of field", "soft focus", "bokeh",
+                     "motion blur", "vintage film"):
+            text = self.good.replace("The camera holds a static shot",
+                                     f"The camera holds a static shot with {word}")
+            findings = validate(text, demo_tl())
+            self.assertIn("warn", levels(findings, "softness"), word)
+
+    def test_too_short(self):
+        text = self.good.split("detailed_description:")[0] + (
+            "detailed_description:\n[Shot 1] She speaks. S1 says, "
+            "<d>[Japanese] こんにちは、今日はいい天気ですね。</d>. Lip movements are "
+            "synchronized. S2 says, <d>[Japanese] そうですね、散歩に行きましょう。</d>."
+            "\n\noverall_soundscape: N/A\n\nnon_diegetic_music: N/A\n")
+        findings = validate(text, demo_tl())
+        self.assertIn("warn", levels(findings, "length"))
+
+    def test_too_long(self):
+        filler = " The light shifts across the path in slow steady waves."
+        text = self.good.replace("Both of them step off together",
+                                 filler * 60 + " Both of them step off together")
+        findings = validate(text, demo_tl())
+        self.assertIn("warn", levels(findings, "length"))
+
+    def test_missing_lipsync_cue_is_info(self):
+        text = self.good.replace(
+            "Her lip movements are perfectly synchronized with her words. ", "")
+        text = text.replace("His lip movements stay synchronized with the line",
+                            "He keeps his head tilted")
+        findings = validate(text, demo_tl())
+        self.assertIn("info", levels(findings, "lipsync_cue"))
+
+    def test_no_utterances_no_cue_needed(self):
+        from h3_prompt_toolkit.timeline import Timeline
+        empty = Timeline(total_sec=5.875, frames=141)
+        text = self.good.replace(
+            "Her lip movements are perfectly synchronized with her words. ", "")
+        text = text.replace("His lip movements stay synchronized with the line",
+                            "He keeps his head tilted")
+        findings = validate(text, empty)
+        self.assertEqual(levels(findings, "lipsync_cue"), [])
 
 
 class TestTsMatch(unittest.TestCase):

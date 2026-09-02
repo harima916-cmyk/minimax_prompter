@@ -1,22 +1,26 @@
 subject_definitions:
-<Picture 1> (ref_image_0): A woman with shoulder-length black hair, wearing a blue cardigan.
-<Picture 2> (ref_image_1): A sunlit park path lined with cherry trees.
-<Audio 1> (ref_audio_0): Two Japanese speakers; S1 female mid-range on screen, S2 male lower off screen.
+<Subject 1> is the woman whose appearance comes from <Picture 1>: shoulder-length black hair, a blue cardigan over a white blouse, and small silver stud earrings.
+<Subject 2> is the man who joins her partway through: a grey jacket over a dark shirt, short hair, slightly taller than <Subject 1>.
+<Picture 2> is the sunlit park path lined with cherry trees, with a low wooden fence along its left edge.
+<Audio 1> (ref_audio_0): the voice-timbre reference for <Subject 1> (S1), a mid-range female voice at a calm pace, and the target video's complete final audio track. <Subject 2> (S2) speaks with a lower male voice at the same relaxed rate.
 
 summary:
-[reference generation + audio reuse] The woman from <Picture 1> talks with a man on the path from <Picture 2>; <Audio 1> is reused as-is.
+[reference generation + audio reuse] The target video shows <Subject 1> standing on the park path from <Picture 2> and exchanging a short greeting with <Subject 2>, who walks in from the right, while <Audio 1> is reused unchanged as the complete final audio track.
 
 retention_analysis:
-<Picture 1>: fully_preserved — identity and outfit.
-<Picture 2>: fully_preserved — environment.
-<Audio 1>: fully_copy — the audio signal is reused unchanged.
+<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - her identity, shoulder-length black hair, blue cardigan, white blouse, and silver stud earrings are retained exactly.
+<Subject 2> (appears in [Shot 2]): fully_preserved - the grey jacket, dark shirt, and short hair are retained.
+<Picture 2>: fully_preserved - the cherry-tree path, wooden fence, and daylight direction are retained.
+<Audio 1>: fully_copy - <Audio 1> is reused 1:1 as the target video's complete final audio track.
 
 detailed_description:
-[Shot 1] Live-action style. The woman stands on the path, camera static.
-At 0:00.500, she smiles. S1 says, <d>[Japanese] こんにちは、今日はいい天気ですね。</d>. She closes her mouth.
-At 0:02.100, she pauses and looks up at the sky.
-At 0:03.000, a man enters the frame. S2 says, <d>[Japanese] そうですね、散歩に行きましょう。</d>. Both walk slowly.
-The camera holds until 0:05.875.
+The target video is live-action and cinematic, lit by clear mid-morning daylight that falls from the left and picks out the texture of the cardigan wool and the loose strands at her temple.
+[Shot 1] A medium close-up frames <Subject 1> standing on the park path from <Picture 2>, turned three-quarters toward the camera, the cherry trees and wooden fence receding behind her. Her hands rest loosely at her sides and her weight settles onto her left foot. The camera holds a static shot so her face stays legible for the whole line.
+At 0:00.500, she lifts her chin, her eyes widen slightly in recognition, and her lips part. S1 says, <d>[Japanese] こんにちは、今日はいい天気ですね。</d>. Her lip movements are perfectly synchronized with her words. As the line ends she closes her mouth, and a small smile settles across her face while she blinks once and lets her shoulders drop.
+At 0:02.100, she glances up at the branches overhead and lets the smile fade.
+[Shot 2] At 0:03.000, the camera cuts to a wider two-shot that keeps <Subject 1> on the left of frame and brings <Subject 2> in from the right, both heads still large enough in frame for their mouths to read clearly. He slows as he reaches her, turns to face the same direction along the path, and lets his hands fall to his sides.
+At 0:03.000, he tips his head toward the trees ahead of them. S2 says, <d>[Japanese] そうですね、散歩に行きましょう。</d>. His lip movements stay synchronized with the line while <Subject 1> nods twice in agreement beside him. Petals drift across the frame behind them, carried on a light breeze that also stirs the hem of her cardigan.
+Both of them step off together at an unhurried pace, the camera holding its position until 0:05.875 while they move down the path and the distance between them and the lens slowly grows.
 
 overall_soundscape: N/A
 

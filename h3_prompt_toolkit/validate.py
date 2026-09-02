@@ -25,6 +25,9 @@ _LEVEL_ORDER = {ERROR: 0, WARN: 1, INFO: 2}
 # (check id, 表示名) — compare の表の行順でもある
 CHECKS = (
     ("fields", "フィールド"),
+    ("wrappers", "出力の包み"),
+    ("task_type", "タスク種別"),
+    ("audio_marker", "音声マーカー"),
     ("ts_format", "時刻書式"),
     ("dialogue", "台詞の同一性"),
     ("monotonic", "単調性"),
@@ -34,12 +37,50 @@ CHECKS = (
     ("shots", "ショット構造"),
     ("soundscape", "音響欄 N/A"),
     ("ts_match", "実測との一致"),
+    ("resolution", "解像度非依存"),
+    ("anchor", "アンカー整合"),
+    ("negation", "否定語"),
+    ("softness", "軟化語"),
+    ("length", "描写の長さ"),
+    ("lipsync_cue", "リップシンク句"),
 )
+
+# 仕様書 §6: ガイダンスは重みに焼き込まれていて否定分岐が無い。否定は
+# 逆効果 (名前を出すと出やすくなる) なので、書かせない。
+NEGATION = re.compile(
+    r"\b(?:no|not|never|without|don't|doesn't|cannot|can't|avoid|"
+    r"nothing|none|neither|nor)\b", re.IGNORECASE)
+
+# 仕様書 §8: リップシンクは口が読めて初めて成立する。画を甘くする語は
+# 口元を潰すので警告する。
+SOFTNESS = re.compile(
+    r"(?:shallow depth of field|soft focus|bokeh|dreamy|hazy|misty|"
+    r"diffused light|motion blur|vintage film|Instagram Live)", re.IGNORECASE)
+
+LIPSYNC_CUE = re.compile(r"synchroniz", re.IGNORECASE)
+
+# 仕様書 §10 の目安 350-500 語。外れをすぐ弾くのではなく、明らかに
+# 短い / 長いときだけ言う。
+DD_WORDS_MIN = 200
+DD_WORDS_MAX = 600
+
+# [Shot 1] が <Picture 1> から始まると書いてある句
+ANCHOR_PHRASE = re.compile(
+    r"\b(?:begins? from|starts? from|opens? on|opens? from)\b", re.IGNORECASE)
+ANCHOR_LOOKAHEAD = 200
 
 _EPS = 0.0005
 
 # 台詞の「軽微な改変」判定で無視する文字 (長音「ー」は意味を持つため残す)
 _PUNCT = re.compile(r"[\s、。，．,\.!?！？…‥・「」『』“”\"'（）()〈〉《》:：;；]+")
+
+# 解像度や工程に依存する語。ワークフロー v2 は同じプロンプトを 0.9MP の
+# 精修パスで再利用するので、特定の解像度や「下書き」を指す語は書かせない。
+RESOLUTION_WORDS = re.compile(
+    r"\b(?:\d{3,4}p|\d{3,4}\s*[x×]\s*\d{3,4}|\d(?:\.\d+)?\s*MP|megapixels?|"
+    r"low[- ]res(?:olution)?|high[- ]res(?:olution)?|upscal\w*|"
+    r"draft|rough pass|refinement pass|first pass|second pass)\b",
+    re.IGNORECASE)
 
 
 @dataclass
@@ -72,6 +113,42 @@ def validate(text: str, tl: Timeline | None = None, expect_na: bool = True):
     if absent:
         f.append(Finding("fields", ERROR,
                          f"欠落フィールド: {', '.join(absent)}"))
+
+    # -- 出力の包み (剥がし忘れ) --------------------------------------------
+    if ref2va.has_wrappers(text):
+        f.append(Finding("wrappers", ERROR,
+                         "<think> ブロックかコードフェンスが残っています "
+                         "(差し替え [C] を通すと自動で取り除かれます)"))
+    if head:
+        shown = head if len(head) <= 60 else head[:60] + "…"
+        f.append(Finding("wrappers", WARN,
+                         f"最初のフィールドより前に文章があります: 「{shown}」"))
+
+    # -- タスク種別 / 音声マーカー (強制音声モードの FIXED) ------------------
+    summary = bodies["summary"]
+    if summary:
+        if "audio reuse" not in summary.lower():
+            f.append(Finding("task_type", ERROR,
+                             "summary のタスク種別に audio reuse がありません "
+                             "(強制音声は音声信号をそのまま使う)"))
+        if not re.search(r"\[[^\]\n]+\]", summary):
+            f.append(Finding("task_type", ERROR,
+                             "summary が [タスク種別] の角括弧で始まっていません"))
+
+    retention = bodies["retention_analysis"]
+    if retention:
+        audio_line = None
+        for line in retention.splitlines():
+            if re.search(r"<Audio\s+1>", line):
+                audio_line = line
+                break
+        if audio_line is None:
+            f.append(Finding("audio_marker", ERROR,
+                             "retention_analysis に <Audio 1> の行がありません"))
+        elif "fully_copy" not in audio_line:
+            f.append(Finding("audio_marker", ERROR,
+                             "<Audio 1> のマーカーが fully_copy ではありません: "
+                             f"「{audio_line.strip()[:60]}」"))
 
     dd = sections.get("detailed_description")
     dd_body = text[dd.body_start:dd.body_end] if dd else ""
@@ -204,6 +281,82 @@ def validate(text: str, tl: Timeline | None = None, expect_na: bool = True):
             level = ERROR if expect_na else INFO
             f.append(Finding("soundscape", level,
                              f"{name} が N/A ではありません: 「{shown}」"))
+
+    # -- First-frame anchor (MiniMaxH3AddGuide) との整合 ----------------------
+    if tl is not None:
+        anchor = bool((tl.ref_texts or {}).get("anchor", False))
+        has_keyframe = "keyframe completion" in (summary or "").lower()
+        if anchor:
+            if not has_keyframe:
+                f.append(Finding("anchor", ERROR,
+                                 "anchor ON なのに summary のタスク種別に "
+                                 "keyframe completion がありません"))
+            pic_line = None
+            for line in (retention or "").splitlines():
+                if re.match(r"\s*<Picture\s+1>", line):
+                    pic_line = line
+                    break
+            if pic_line is None:
+                f.append(Finding("anchor", ERROR,
+                                 "anchor ON なのに retention_analysis に "
+                                 "<Picture 1> の独立行がありません"))
+            elif "fully_preserved" not in pic_line:
+                f.append(Finding("anchor", ERROR,
+                                 "anchor ON の <Picture 1> が fully_preserved "
+                                 f"ではありません: 「{pic_line.strip()[:60]}」"))
+            if dd_body:
+                i = dd_body.find("[Shot 1]")
+                window = dd_body[i:i + ANCHOR_LOOKAHEAD] if i >= 0 else ""
+                if not ANCHOR_PHRASE.search(window):
+                    f.append(Finding("anchor", WARN,
+                                     "[Shot 1] の冒頭に <Picture 1> から始まると"
+                                     "書かれていません (begins from / opens on)"))
+        elif has_keyframe:
+            f.append(Finding("anchor", WARN,
+                             "anchor OFF なのに keyframe completion が使われて"
+                             "います (ワークフローの AddGuide 設定と食い違い)"))
+
+    # -- 解像度非依存 (精修パスで同じプロンプトを使い回すため) ----------------
+    if dd_body:
+        for m in RESOLUTION_WORDS.finditer(dd_body):
+            f.append(Finding("resolution", WARN,
+                             f"解像度・工程に依存する語: 「{m.group(0)}」 — "
+                             "同じプロンプトを精修パスで使い回せなくなります"))
+
+    # -- 仕様書 §6 / §10 の機械チェック (台詞の中は対象外) --------------------
+    if dd_body:
+        outside = ref2va.DIALOGUE.sub(" ", dd_body)
+        seen = set()
+        for m in NEGATION.finditer(outside):
+            word = m.group(0).lower()
+            if word in seen:
+                continue
+            seen.add(word)
+            f.append(Finding("negation", WARN,
+                             f"否定語「{m.group(0)}」— 否定分岐が無いので逆効果 "
+                             "(欲しい状態を肯定形で書く)"))
+        for m in SOFTNESS.finditer(outside):
+            f.append(Finding("softness", WARN,
+                             f"軟化語「{m.group(0)}」— 口元が潰れてリップシンクが"
+                             "読めなくなります"))
+
+        words = len(outside.split())
+        if words < DD_WORDS_MIN:
+            f.append(Finding("length", WARN,
+                             f"detailed_description が {words} 語 — "
+                             f"目安 350-500 に対して短すぎます"))
+        elif words > DD_WORDS_MAX:
+            f.append(Finding("length", WARN,
+                             f"detailed_description が {words} 語 — "
+                             f"目安 350-500 に対して長すぎます (高解像度で"
+                             "指示追従が落ちます)"))
+
+        if tl is not None and tl.usable_utterances() and \
+                not LIPSYNC_CUE.search(outside):
+            f.append(Finding("lipsync_cue", INFO,
+                             "リップシンクの一文がありません "
+                             "(例: Her lip movements are perfectly "
+                             "synchronized with her words.)"))
 
     # -- 実測タイムスタンプとの一致 -----------------------------------------
     if tl is not None:

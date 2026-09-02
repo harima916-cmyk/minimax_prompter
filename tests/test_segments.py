@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""区間検出の回帰テスト。合成波形 (トーン + 無音) で行う。実 wav は使わない。"""
+"""区間検出 (廃止済み) の回帰テスト。legacy/ に退避したロジックを見る。
+
+GUI からは外したが、ライブラリとして参照する人のために挙動は固定する。
+合成波形 (トーン + 無音) で行い、実 wav は使わない。
+"""
 
 import unittest
 
@@ -7,7 +11,14 @@ import _path  # noqa: F401
 
 import numpy as np
 
-from h3_prompt_toolkit.segments import detect_segments
+import importlib.util, os
+
+_spec = importlib.util.spec_from_file_location(
+    "legacy_segments",
+    os.path.join(_path.ROOT, "legacy", "segments.py"))
+_legacy = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_legacy)
+detect_segments = _legacy.detect_segments
 
 SR = 16000
 

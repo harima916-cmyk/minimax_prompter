@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """バッチ用 CLI。
 
-    python -m h3_prompt_toolkit.cli measure    --wav voice.wav --lines lines.txt --save-timeline tl.json
     python -m h3_prompt_toolkit.cli pad        --wav voice.wav
     python -m h3_prompt_toolkit.cli scaffold   --timeline tl.json
     python -m h3_prompt_toolkit.cli substitute --timeline tl.json llm_output.txt -o final.txt
@@ -41,62 +40,17 @@ def _err(*a):
 # タイムラインの組み立て / 読み込み
 # ---------------------------------------------------------------------------
 
-def _add_source_args(p, need_lines=True):
+def _add_source_args(p):
     g = p.add_argument_group("タイムラインの入力")
     g.add_argument("--timeline", metavar="JSON",
-                   help="measure --save-timeline で保存した JSON")
-    g.add_argument("--wav", metavar="WAV", help="音声ファイル (JSON の代わりに実測する)")
-    if need_lines:
-        g.add_argument("--lines", metavar="TXT",
-                       help="台詞ファイル (1 行 1 発話 / 「S2: …」で話者指定)")
-    g.add_argument("--lang", default=DEFAULT_LANG, help=f"言語タグ (既定 {DEFAULT_LANG})")
-    g.add_argument("--n-images", type=int, default=2, help="参照画像の枚数 (既定 2)")
-    g.add_argument("--grid-k", type=int, default=None,
-                   help="尺のグリッド係数 k (17k+5 フレーム)。省略時は収まる最小")
-    d = p.add_argument_group("発話区間検出")
-    d.add_argument("--thresh-db", type=float, default=-40.0)
-    d.add_argument("--min-silence-ms", type=int, default=250)
-    d.add_argument("--min-speech-ms", type=int, default=120)
-    d.add_argument("--pad-ms", type=int, default=40)
+                   help="GUI の「タイムライン保存…」で書き出した JSON")
 
 
-def _measure(args):
-    """wav と台詞から Timeline を実測で組み立てる。(tl, dur) を返す。"""
-    from .audio import read_wav
-    from .segments import detect_segments
-
-    samples, sr, _ = read_wav(args.wav)
-    dur = len(samples) / sr
-    segs = detect_segments(samples, sr,
-                           thresh_db=args.thresh_db,
-                           min_silence_ms=args.min_silence_ms,
-                           min_speech_ms=args.min_speech_ms,
-                           pad_ms=args.pad_ms)
-    lines = []
-    if getattr(args, "lines", None):
-        with open(args.lines, encoding="utf-8") as fh:
-            lines = parse_lines(fh.read())
-    utts = build_timeline(segs, lines, args.lang)
-
-    if args.grid_k is not None:
-        k = args.grid_k
-        frames, total = grid_frames(k), grid_seconds(k)
-    else:
-        k, frames, total = snap_up(dur)
-    if total < dur - 1e-9:
-        _err(f"⚠ 指定の尺 {total:.3f}s は音声 {dur:.3f}s より短いです")
-
-    tl = Timeline(utterances=utts, total_sec=total, frames=frames,
-                  wav_path=args.wav, n_images=args.n_images)
-    return tl, dur
-
-
-def _load_timeline(args, need_lines=True):
+def _load_timeline(args):
     if args.timeline:
         return Timeline.load(args.timeline)
-    if args.wav:
-        return _measure(args)[0]
-    _err("--timeline か --wav のどちらかを指定してください。")
+    _err("--timeline を指定してください "
+         "(発話区間は GUI で手動クリップして保存します)。")
     sys.exit(1)
 
 
@@ -121,31 +75,6 @@ def _write_output(path, text):
 # ---------------------------------------------------------------------------
 # サブコマンド
 # ---------------------------------------------------------------------------
-
-def cmd_measure(args):
-    tl, dur = _measure(args)
-    _err(f"{args.wav}: {dur:.3f} 秒 → 動画長 {tl.total_sec:.3f} 秒 "
-         f"({tl.frames} フレーム @ {FPS}fps)")
-    cands, k0 = grid_candidates(dur)
-    _err("グリッド候補: " + ", ".join(
-        f"{sec:.3f}s/{fr}f" + ("*" if fr == tl.frames else "")
-        for _, fr, sec in cands))
-    for u in tl.utterances:
-        if u.start is None:
-            print(f"[{u.index}] 区間未検出           ({u.speaker}) {u.text}")
-        else:
-            print(f"[{u.index}] {fmt_ts(u.start)} – {fmt_ts(u.end)} ({u.speaker}) {u.text}")
-    n_seg = sum(1 for u in tl.utterances if u.start is not None)
-    n_lin = sum(1 for u in tl.utterances if u.text)
-    if n_seg != n_lin:
-        _err(f"⚠ 台詞 {n_lin} 行に対し検出区間 {n_seg} 個。対応を確認してください。")
-    if args.save_timeline:
-        tl.save(args.save_timeline)
-        _err(f"タイムライン保存: {args.save_timeline}")
-    if args.json:
-        print(tl.to_json())
-    return 0
-
 
 def cmd_pad(args):
     from .audio import read_wav, read_wav_raw_stereo, write_wav_pcm16, pad_to_seconds
@@ -267,20 +196,6 @@ def build_parser():
         prog="h3_prompt_toolkit",
         description="MiniMax-H3 強制音声リップシンク用プロンプト組み立てツール (バッチ)")
     sub = p.add_subparsers(dest="cmd", required=True)
-
-    m = sub.add_parser("measure", help="[A] wav から発話タイムラインを実測する")
-    m.add_argument("--wav", required=True)
-    m.add_argument("--lines", metavar="TXT", help="台詞ファイル (1 行 1 発話)")
-    m.add_argument("--lang", default=DEFAULT_LANG)
-    m.add_argument("--n-images", type=int, default=2)
-    m.add_argument("--grid-k", type=int, default=None)
-    m.add_argument("--thresh-db", type=float, default=-40.0)
-    m.add_argument("--min-silence-ms", type=int, default=250)
-    m.add_argument("--min-speech-ms", type=int, default=120)
-    m.add_argument("--pad-ms", type=int, default=40)
-    m.add_argument("--save-timeline", metavar="JSON")
-    m.add_argument("--json", action="store_true", help="タイムライン JSON を stdout へ")
-    m.set_defaults(func=cmd_measure)
 
     d = sub.add_parser("pad", help="[A] 17k+5 フレーム長へ無音パディングした wav を書き出す")
     d.add_argument("--wav", required=True)
