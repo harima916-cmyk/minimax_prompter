@@ -162,6 +162,56 @@ class TestSoundscape(unittest.TestCase):
         self.assertEqual(levels(findings, "soundscape"), ["info"])
 
 
+class TestTaskTypeAndAudioMarker(unittest.TestCase):
+    """A4: 強制音声モードの FIXED (audio reuse / fully_copy)。"""
+
+    def test_missing_audio_reuse(self):
+        text = _path.fixture("ref2va_good.txt").replace(
+            "[reference generation + audio reuse]", "[reference generation]")
+        findings = validate(text, demo_tl())
+        self.assertIn("error", levels(findings, "task_type"))
+
+    def test_missing_bracketed_task_type(self):
+        text = _path.fixture("ref2va_good.txt").replace(
+            "[reference generation + audio reuse] The target", "The target")
+        findings = validate(text, demo_tl())
+        self.assertIn("error", levels(findings, "task_type"))
+
+    def test_wrong_audio_marker(self):
+        text = _path.fixture("ref2va_good.txt").replace(
+            "<Audio 1>: fully_copy", "<Audio 1>: fully_preserved")
+        findings = validate(text, demo_tl())
+        self.assertIn("error", levels(findings, "audio_marker"))
+
+    def test_missing_audio_line(self):
+        good = _path.fixture("ref2va_good.txt")
+        line = [l for l in good.splitlines() if l.startswith("<Audio 1>: ")][0]
+        findings = validate(good.replace(line + "\n", ""), demo_tl())
+        self.assertIn("error", levels(findings, "audio_marker"))
+
+    def test_good_passes(self):
+        findings = validate(_path.fixture("ref2va_good.txt"), demo_tl())
+        self.assertEqual(levels(findings, "task_type"), [])
+        self.assertEqual(levels(findings, "audio_marker"), [])
+
+
+class TestResolutionIndependence(unittest.TestCase):
+    """A4: 精修パスで使い回せるよう、解像度・工程の語を弾く。"""
+
+    def test_resolution_words(self):
+        for word in ("768p", "1344x768", "0.4 MP", "low-res", "upscaled",
+                     "draft", "refinement pass"):
+            text = _path.fixture("ref2va_good.txt").replace(
+                "Live-action style.", f"Live-action style, {word}.")
+            findings = validate(text, demo_tl())
+            self.assertIn("warn", levels(findings, "resolution"),
+                          f"{word} が検出されない")
+
+    def test_good_passes(self):
+        findings = validate(_path.fixture("ref2va_good.txt"), demo_tl())
+        self.assertEqual(levels(findings, "resolution"), [])
+
+
 class TestTsMatch(unittest.TestCase):
     def test_drifted_timestamps_warn(self):
         findings = validate(_path.fixture("ref2va_drifted.txt"), demo_tl())

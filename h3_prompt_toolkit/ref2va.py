@@ -32,6 +32,65 @@ NA_FIELDS = ("overall_soundscape", "non_diegetic_music")
 
 
 # ---------------------------------------------------------------------------
+# 包み剥がし (LLM が付ける余計な外側)
+# ---------------------------------------------------------------------------
+
+THINK_OPEN = "<think>"
+THINK_CLOSE = "</think>"
+
+_FENCE = re.compile(r"^[ \t]*```[^\n]*\n(.*?)\n[ \t]*```[ \t]*$", re.DOTALL)
+_FENCE_ANY = re.compile(r"^[ \t]*```[^\n]*\n(.*)", re.DOTALL)
+
+
+def strip_wrappers(text: str) -> str:
+    """LLM 出力から、プロンプト本体でない外側を取り除く。
+
+    Qwen 系はこの 3 つを付けてくることがある:
+      - <think> ... </think> の推論ブロック (閉じずに切れることもある)
+      - ``` で囲んだコードフェンス
+      - 「Assumption:」等の前置き行 (最初のフィールド見出しより前)
+
+    仕様書は「プロンプトのみを返せ」と指示しているが、守られなかった分は
+    機械で剥がす。剥がせるものだけ剥がし、判断が要るものは残して [D] に
+    報告させる。
+    """
+    s = text or ""
+
+    # <think> ブロック: 閉じていれば最後の </think> まで、閉じていなければ
+    # (＝途中で切れた出力) 開き以降を丸ごと捨てる
+    if THINK_CLOSE in s:
+        s = s.rsplit(THINK_CLOSE, 1)[-1]
+    elif THINK_OPEN in s:
+        s = s.split(THINK_OPEN, 1)[0]
+    s = s.strip()
+
+    # コードフェンス: 全体を囲っている形を優先、閉じ忘れも拾う
+    m = _FENCE.match(s)
+    if m:
+        s = m.group(1).strip()
+    else:
+        m = _FENCE_ANY.match(s)
+        if m:
+            s = m.group(1)
+            if "```" in s:
+                s = s.rsplit("```", 1)[0]
+            s = s.strip()
+
+    # 前置き: 最初のフィールド見出しより前を落とす (見出しが無ければ触らない)
+    matches = list(_label_pattern(REF_OUTPUT_FIELDS).finditer(s))
+    if matches and matches[0].start() > 0:
+        s = s[matches[0].start():].strip()
+    return s
+
+
+def has_wrappers(text: str) -> bool:
+    """剥がすべき包みが残っているか ([D] 用)。"""
+    s = text or ""
+    return (THINK_OPEN in s or THINK_CLOSE in s
+            or bool(_FENCE_ANY.match(s.strip())))
+
+
+# ---------------------------------------------------------------------------
 # フィールド分割
 # ---------------------------------------------------------------------------
 

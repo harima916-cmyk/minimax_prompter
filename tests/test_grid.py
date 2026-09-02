@@ -40,12 +40,24 @@ class TestGrid(unittest.TestCase):
 
 
 class TestComfyDuration(unittest.TestCase):
-    """公式テンプレートの Math Expression 丸めと、Float 1 桁制限の安全値。"""
+    """Math Expression の丸めと、Float 1 桁制限の安全値。"""
 
-    def test_template_rounds_up_to_grid(self):
+    def test_default_is_ceil(self):
+        # ワークフロー v2 は ceil(a*24)
         self.assertEqual(template_frames(15.0), 362)
-        self.assertEqual(template_frames(15.792), 379)
         self.assertEqual(template_frames(0.0), 5)
+        # 15.792 s = 379.008 f → ceil 380 → 次の 17k+5 は 396
+        self.assertEqual(template_frames(15.792), 396)
+        # ちょうどグリッド上の値は誤差で 1 枠飛ばない (round してから ceil)
+        self.assertEqual(template_frames(141 / FPS), 141)
+
+    def test_round_mode_matches_official_template(self):
+        self.assertEqual(template_frames(15.792, rounding="round"), 379)
+        self.assertEqual(template_frames(15.0, rounding="round"), 362)
+
+    def test_unknown_rounding_rejected(self):
+        with self.assertRaises(ValueError):
+            template_frames(1.0, rounding="floor")
 
     def test_exact_seconds_land_on_same_frames(self):
         for k in range(0, 41):
@@ -73,7 +85,14 @@ class TestComfyDuration(unittest.TestCase):
         self.assertEqual(template_frames(5.8), 141)
         self.assertEqual(comfy_float_hint(379), 15.7)
         self.assertEqual(template_frames(15.7), 379)
-        self.assertEqual(template_frames(15.8), 379)  # 379 は 15.8 でも収まる
+        # ceil では 15.8 は次の枠に飛ぶ。だから案内は切り捨て 1 桁に統一する
+        self.assertEqual(template_frames(15.8), 396)
+
+    def test_hint_is_safe_under_round_mode_too(self):
+        for k in range(0, 41):
+            frames = grid_frames(k)
+            hint = comfy_float_hint(frames)
+            self.assertEqual(template_frames(hint, rounding="round"), frames)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,9 @@ _LEVEL_ORDER = {ERROR: 0, WARN: 1, INFO: 2}
 # (check id, 表示名) — compare の表の行順でもある
 CHECKS = (
     ("fields", "フィールド"),
+    ("wrappers", "出力の包み"),
+    ("task_type", "タスク種別"),
+    ("audio_marker", "音声マーカー"),
     ("ts_format", "時刻書式"),
     ("dialogue", "台詞の同一性"),
     ("monotonic", "単調性"),
@@ -34,12 +37,21 @@ CHECKS = (
     ("shots", "ショット構造"),
     ("soundscape", "音響欄 N/A"),
     ("ts_match", "実測との一致"),
+    ("resolution", "解像度非依存"),
 )
 
 _EPS = 0.0005
 
 # 台詞の「軽微な改変」判定で無視する文字 (長音「ー」は意味を持つため残す)
 _PUNCT = re.compile(r"[\s、。，．,\.!?！？…‥・「」『』“”\"'（）()〈〉《》:：;；]+")
+
+# 解像度や工程に依存する語。ワークフロー v2 は同じプロンプトを 0.9MP の
+# 精修パスで再利用するので、特定の解像度や「下書き」を指す語は書かせない。
+RESOLUTION_WORDS = re.compile(
+    r"\b(?:\d{3,4}p|\d{3,4}\s*[x×]\s*\d{3,4}|\d(?:\.\d+)?\s*MP|megapixels?|"
+    r"low[- ]res(?:olution)?|high[- ]res(?:olution)?|upscal\w*|"
+    r"draft|rough pass|refinement pass|first pass|second pass)\b",
+    re.IGNORECASE)
 
 
 @dataclass
@@ -72,6 +84,42 @@ def validate(text: str, tl: Timeline | None = None, expect_na: bool = True):
     if absent:
         f.append(Finding("fields", ERROR,
                          f"欠落フィールド: {', '.join(absent)}"))
+
+    # -- 出力の包み (剥がし忘れ) --------------------------------------------
+    if ref2va.has_wrappers(text):
+        f.append(Finding("wrappers", ERROR,
+                         "<think> ブロックかコードフェンスが残っています "
+                         "(差し替え [C] を通すと自動で取り除かれます)"))
+    if head:
+        shown = head if len(head) <= 60 else head[:60] + "…"
+        f.append(Finding("wrappers", WARN,
+                         f"最初のフィールドより前に文章があります: 「{shown}」"))
+
+    # -- タスク種別 / 音声マーカー (強制音声モードの FIXED) ------------------
+    summary = bodies["summary"]
+    if summary:
+        if "audio reuse" not in summary.lower():
+            f.append(Finding("task_type", ERROR,
+                             "summary のタスク種別に audio reuse がありません "
+                             "(強制音声は音声信号をそのまま使う)"))
+        if not re.search(r"\[[^\]\n]+\]", summary):
+            f.append(Finding("task_type", ERROR,
+                             "summary が [タスク種別] の角括弧で始まっていません"))
+
+    retention = bodies["retention_analysis"]
+    if retention:
+        audio_line = None
+        for line in retention.splitlines():
+            if re.search(r"<Audio\s+1>", line):
+                audio_line = line
+                break
+        if audio_line is None:
+            f.append(Finding("audio_marker", ERROR,
+                             "retention_analysis に <Audio 1> の行がありません"))
+        elif "fully_copy" not in audio_line:
+            f.append(Finding("audio_marker", ERROR,
+                             "<Audio 1> のマーカーが fully_copy ではありません: "
+                             f"「{audio_line.strip()[:60]}」"))
 
     dd = sections.get("detailed_description")
     dd_body = text[dd.body_start:dd.body_end] if dd else ""
@@ -204,6 +252,13 @@ def validate(text: str, tl: Timeline | None = None, expect_na: bool = True):
             level = ERROR if expect_na else INFO
             f.append(Finding("soundscape", level,
                              f"{name} が N/A ではありません: 「{shown}」"))
+
+    # -- 解像度非依存 (精修パスで同じプロンプトを使い回すため) ----------------
+    if dd_body:
+        for m in RESOLUTION_WORDS.finditer(dd_body):
+            f.append(Finding("resolution", WARN,
+                             f"解像度・工程に依存する語: 「{m.group(0)}」 — "
+                             "同じプロンプトを精修パスで使い回せなくなります"))
 
     # -- 実測タイムスタンプとの一致 -----------------------------------------
     if tl is not None:

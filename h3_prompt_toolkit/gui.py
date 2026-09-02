@@ -544,6 +544,10 @@ class App(ttk.Frame):
         ttk.Label(spec, textvariable=self.var_spec, foreground="#333").pack(
             side="left", padx=(8, 0))
         self._update_spec_label()
+        self.var_anchor = tk.BooleanVar(value=False)
+        ttk.Checkbutton(spec, text="First-frame anchor (AddGuide) を使う",
+                        variable=self.var_anchor,
+                        command=self._sync_outputs).pack(side="right")
 
         self.refs_frame = ttk.LabelFrame(
             t, text="参照の説明 (ブリーフに入る。英語で簡潔に)", padding=4)
@@ -1010,7 +1014,8 @@ class App(ttk.Frame):
         brief = render_brief(self.utts, total, frames, wav_name,
                              [v.get() for v in self.ref_pic_vars],
                              self.ref_audio_var.get(),
-                             scenario=self.txt_scenario.get("1.0", "end-1c"))
+                             scenario=self.txt_scenario.get("1.0", "end-1c"),
+                             anchor=self.var_anchor.get())
         self.txt_brief.delete("1.0", "end")
         self.txt_brief.insert("1.0", brief)
 
@@ -1088,6 +1093,7 @@ class App(ttk.Frame):
                             "pictures": [v.get() for v in self.ref_pic_vars],
                             "audio": self.ref_audio_var.get(),
                             "scenario": self.txt_scenario.get("1.0", "end-1c"),
+                            "anchor": bool(self.var_anchor.get()),
                         })
 
     def on_save_tl(self):
@@ -1141,6 +1147,7 @@ class App(ttk.Frame):
             self.ref_audio_var.set(tl.ref_texts["audio"])
         self.txt_scenario.delete("1.0", "end")
         self.txt_scenario.insert("1.0", (tl.ref_texts or {}).get("scenario", ""))
+        self.var_anchor.set(bool((tl.ref_texts or {}).get("anchor", False)))
         self._sync_all()
         self.var_status.set(
             "タイムラインを読み込みました。wav が無いため波形と再生は使えません。")

@@ -9,7 +9,7 @@ summary:
 retention_analysis:
 <Picture 1>: fully_preserved — identity, hair, and outfit of the woman.
 <Picture 2>: fully_preserved — environment and lighting of the park.
-<Audio 1>: fully_copy — the audio signal is reused unchanged.
+<Audio 1>: fully_copy - <Audio 1> is reused 1:1 as the target video's complete final audio track.
 
 detailed_description:
 [Shot 1] Live-action style. The woman from <Picture 1> stands on the park path from <Picture 2>, facing the camera at a medium distance. The camera is static.

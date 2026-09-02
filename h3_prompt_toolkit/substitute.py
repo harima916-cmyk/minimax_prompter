@@ -121,6 +121,15 @@ def substitute(text: str, tl: Timeline, ts_map=None, d_map=None,
     utts = tl.usable_utterances()
     res.utterances = utts
 
+    # LLM が付けた <think> / コードフェンス / 前置きを先に剥がす。
+    # 剥がすものが無ければ原文のまま (前後の空白だけの差では触らない)。
+    stripped = ref2va.strip_wrappers(text)
+    if stripped != text.strip():
+        res.report.append("LLM 出力の包み (<think> / コードフェンス / 前置き) "
+                          "を取り除きました。")
+        text = stripped
+        res.text = text
+
     head, sections = ref2va.find_sections(text)
     dd = sections.get("detailed_description")
     if dd is None:

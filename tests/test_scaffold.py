@@ -44,6 +44,23 @@ class TestEnglishScaffold(unittest.TestCase):
         self.assertIn("- NOTE: 確認すること", sc)
 
 
+class TestSkeletonMarkers(unittest.TestCase):
+    """A6: 強制音声では audio reuse / fully_copy が正。"""
+
+    def test_english_skeleton(self):
+        tl = demo_tl()
+        pr = render_prompt_skeleton_en(tl.utterances, tl.total_sec, tl.n_images)
+        self.assertIn("[reference generation + audio reuse]", pr)
+        self.assertIn("<Audio 1>: fully_copy", pr)
+        self.assertNotIn("fully_preserved — the audio", pr)
+
+    def test_japanese_skeleton(self):
+        tl = demo_tl()
+        pr = render_prompt_skeleton(tl.utterances, tl.total_sec, tl.n_images)
+        self.assertIn("[reference generation + audio reuse]", pr)
+        self.assertIn("<Audio 1>: fully_copy", pr)
+
+
 class TestEnglishSkeleton(unittest.TestCase):
     def setUp(self):
         self.tl = demo_tl()
@@ -134,6 +151,20 @@ class TestBrief(unittest.TestCase):
     def test_scenario_default_latitude(self):
         # 未記入なら「創作裁量で埋めよ」の一文が入る
         self.assertIn("Scenario: not specified", self.brief)
+
+    def test_workflow_name_and_anchor_off(self):
+        self.assertIn("ComfyUI workflow: "
+                      "video_minimax_h3_r2v_forced_audio_lora_v2", self.brief)
+        self.assertIn("First-frame anchor: OFF", self.brief)
+        self.assertIn("do not use the keyframe completion task type",
+                      self.brief)
+
+    def test_anchor_on(self):
+        brief = render_brief(self.tl.utterances, self.tl.total_sec,
+                             self.tl.frames, "voice.wav", anchor=True)
+        self.assertIn("First-frame anchor: ON", brief)
+        self.assertIn("keyframe completion", brief)
+        self.assertIn("<Picture 1> is the actual first frame", brief)
 
 
 class TestReferenceHeader(unittest.TestCase):

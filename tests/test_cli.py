@@ -165,7 +165,9 @@ class TestCli(unittest.TestCase):
     def test_settings(self):
         code, out, _ = run_cli("settings")
         self.assertEqual(code, 0)
-        self.assertIn("n_ctx", out)
+        self.assertIn("qwen3.8-27b", out)
+        self.assertIn("temperature: 0.7", out)
+        self.assertIn("reasoning_effort", out)
         self.assertIn("16384", out)
 
 
