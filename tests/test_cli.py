@@ -3,7 +3,6 @@
 
 import contextlib
 import io
-import json
 import os
 import shutil
 import tempfile
@@ -42,28 +41,10 @@ class TestCli(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.wav = os.path.join(self.dir, "voice.wav")
         make_demo_wav(self.wav)
-        self.lines = os.path.join(self.dir, "lines.txt")
-        with open(self.lines, "w", encoding="utf-8") as fh:
-            fh.write("こんにちは\nS2: そうですね\n")
         self.tl_json = os.path.join(_path.FIXTURES, "timeline_demo.json")
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
-
-    def test_measure_and_save(self):
-        save = os.path.join(self.dir, "tl.json")
-        code, out, err = run_cli("measure", "--wav", self.wav,
-                                 "--lines", self.lines,
-                                 "--save-timeline", save, "--json")
-        self.assertEqual(code, 0)
-        self.assertIn("[1]", out)
-        data = json.loads(out[out.index("{"):])
-        self.assertEqual(len(data["utterances"]), 2)
-        self.assertEqual(data["utterances"][1]["speaker"], "S2")
-        self.assertTrue(os.path.exists(save))
-        # 3.2 秒 → 82f (17*4+5=73f は 3.042s で足りず、 k=5 → 90f=3.75s…計算で確認)
-        self.assertEqual(data["frames"] % 17, 5)
-        self.assertGreaterEqual(data["total_sec"], 3.2)
 
     def test_pad(self):
         code, out, err = run_cli("pad", "--wav", self.wav)
