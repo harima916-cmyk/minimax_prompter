@@ -202,6 +202,65 @@ class TestTaskTypeAndAudioMarker(unittest.TestCase):
         self.assertEqual(levels(findings, "audio_marker"), [])
 
 
+def anchor_tl(on=True):
+    tl = demo_tl()
+    tl.ref_texts = dict(tl.ref_texts or {})
+    tl.ref_texts["anchor"] = on
+    return tl
+
+
+class TestAnchorConsistency(unittest.TestCase):
+    """P2: First-frame anchor (AddGuide) の ON/OFF とプロンプトの整合。"""
+
+    def setUp(self):
+        self.anchor_text = _path.fixture("ref2va_anchor_on.txt")
+
+    def test_anchor_on_fixture_is_clean(self):
+        findings = validate(self.anchor_text, anchor_tl(True))
+        self.assertEqual(levels(findings, "anchor"), [], render_report(findings))
+        self.assertEqual(counts(findings)[0], 0, render_report(findings))
+
+    def test_anchor_on_requires_keyframe_completion(self):
+        text = self.anchor_text.replace(
+            "[keyframe completion + reference generation + audio reuse]",
+            "[reference generation + audio reuse]")
+        findings = validate(text, anchor_tl(True))
+        self.assertIn("error", levels(findings, "anchor"))
+
+    def test_anchor_on_requires_picture1_fully_preserved(self):
+        text = self.anchor_text.replace(
+            "<Picture 1> (appears in [Shot 1]): fully_preserved -",
+            "<Picture 1> (appears in [Shot 1]): weak_reference -")
+        findings = validate(text, anchor_tl(True))
+        self.assertIn("error", levels(findings, "anchor"))
+
+    def test_anchor_on_missing_picture1_retention_line(self):
+        line = [l for l in self.anchor_text.splitlines()
+                if l.startswith("<Picture 1> (appears")][0]
+        findings = validate(self.anchor_text.replace(line + "\n", ""),
+                            anchor_tl(True))
+        self.assertIn("error", levels(findings, "anchor"))
+
+    def test_anchor_on_wants_begins_from_phrase(self):
+        text = self.anchor_text.replace(
+            "[Shot 1] The target video begins from <Picture 1>:",
+            "[Shot 1] A medium close-up shows the woman,")
+        findings = validate(text, anchor_tl(True))
+        self.assertIn("warn", levels(findings, "anchor"))
+
+    def test_anchor_off_flags_keyframe_completion(self):
+        findings = validate(self.anchor_text, anchor_tl(False))
+        self.assertIn("warn", levels(findings, "anchor"))
+
+    def test_anchor_off_normal_output_is_clean(self):
+        findings = validate(_path.fixture("ref2va_good.txt"), anchor_tl(False))
+        self.assertEqual(levels(findings, "anchor"), [])
+
+    def test_no_timeline_skips_check(self):
+        findings = validate(self.anchor_text, None)
+        self.assertEqual(levels(findings, "anchor"), [])
+
+
 class TestResolutionIndependence(unittest.TestCase):
     """A4: 精修パスで使い回せるよう、解像度・工程の語を弾く。"""
 

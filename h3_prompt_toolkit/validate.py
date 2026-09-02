@@ -38,7 +38,13 @@ CHECKS = (
     ("soundscape", "音響欄 N/A"),
     ("ts_match", "実測との一致"),
     ("resolution", "解像度非依存"),
+    ("anchor", "アンカー整合"),
 )
+
+# [Shot 1] が <Picture 1> から始まると書いてある句
+ANCHOR_PHRASE = re.compile(
+    r"\b(?:begins? from|starts? from|opens? on|opens? from)\b", re.IGNORECASE)
+ANCHOR_LOOKAHEAD = 200
 
 _EPS = 0.0005
 
@@ -252,6 +258,40 @@ def validate(text: str, tl: Timeline | None = None, expect_na: bool = True):
             level = ERROR if expect_na else INFO
             f.append(Finding("soundscape", level,
                              f"{name} が N/A ではありません: 「{shown}」"))
+
+    # -- First-frame anchor (MiniMaxH3AddGuide) との整合 ----------------------
+    if tl is not None:
+        anchor = bool((tl.ref_texts or {}).get("anchor", False))
+        has_keyframe = "keyframe completion" in (summary or "").lower()
+        if anchor:
+            if not has_keyframe:
+                f.append(Finding("anchor", ERROR,
+                                 "anchor ON なのに summary のタスク種別に "
+                                 "keyframe completion がありません"))
+            pic_line = None
+            for line in (retention or "").splitlines():
+                if re.match(r"\s*<Picture\s+1>", line):
+                    pic_line = line
+                    break
+            if pic_line is None:
+                f.append(Finding("anchor", ERROR,
+                                 "anchor ON なのに retention_analysis に "
+                                 "<Picture 1> の独立行がありません"))
+            elif "fully_preserved" not in pic_line:
+                f.append(Finding("anchor", ERROR,
+                                 "anchor ON の <Picture 1> が fully_preserved "
+                                 f"ではありません: 「{pic_line.strip()[:60]}」"))
+            if dd_body:
+                i = dd_body.find("[Shot 1]")
+                window = dd_body[i:i + ANCHOR_LOOKAHEAD] if i >= 0 else ""
+                if not ANCHOR_PHRASE.search(window):
+                    f.append(Finding("anchor", WARN,
+                                     "[Shot 1] の冒頭に <Picture 1> から始まると"
+                                     "書かれていません (begins from / opens on)"))
+        elif has_keyframe:
+            f.append(Finding("anchor", WARN,
+                             "anchor OFF なのに keyframe completion が使われて"
+                             "います (ワークフローの AddGuide 設定と食い違い)"))
 
     # -- 解像度非依存 (精修パスで同じプロンプトを使い回すため) ----------------
     if dd_body:
