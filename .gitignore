@@ -1,2 +1,3 @@
 __pycache__/
 *.pyc
+h3_prompt_toolkit/settings.json

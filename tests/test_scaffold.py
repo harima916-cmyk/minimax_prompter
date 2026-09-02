@@ -159,6 +159,24 @@ class TestBrief(unittest.TestCase):
         self.assertIn("do not use the keyframe completion task type",
                       self.brief)
 
+    def test_image_names_and_tts_length(self):
+        brief = render_brief(self.tl.utterances, self.tl.total_sec,
+                             self.tl.frames, "voice_141f.wav",
+                             image_names=["chr1047_face.png", "park.png"],
+                             tts_seconds=4.812)
+        self.assertIn("Attached image files, in label order: "
+                      "<Picture 1> = chr1047_face.png, <Picture 2> = park.png",
+                      brief)
+        self.assertIn("TTS length before padding: 4.812 s.", brief)
+        self.assertIn("Duration is already fixed by the toolkit; "
+                      "do not suggest one.", brief)
+
+    def test_image_names_omitted_when_absent(self):
+        self.assertNotIn("Attached image files", self.brief)
+        self.assertNotIn("TTS length before padding", self.brief)
+        # Duration 宣言は常に入れる (LLM の assumption 行を抑える)
+        self.assertIn("Duration is already fixed by the toolkit", self.brief)
+
     def test_anchor_on(self):
         brief = render_brief(self.tl.utterances, self.tl.total_sec,
                              self.tl.frames, "voice.wav", anchor=True)

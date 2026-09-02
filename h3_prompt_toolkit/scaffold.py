@@ -266,7 +266,8 @@ WORKFLOW_NAME = "video_minimax_h3_r2v_forced_audio_lora_v2"
 
 def render_brief(utts, total_sec, frames, wav_name,
                  pic_texts=(), audio_text="", scenario="",
-                 anchor=False, workflow=WORKFLOW_NAME) -> str:
+                 anchor=False, workflow=WORKFLOW_NAME,
+                 image_names=(), tts_seconds=None) -> str:
     """仕様書 (minimax_ref2v_rule.txt) に追記するブリーフ。
 
     仕様書は「ユーザーが強制音声ワークフローだと言ったらモードを切り替え、
@@ -305,13 +306,20 @@ def render_brief(utts, total_sec, frames, wav_name,
     L.append("References:")
     for line in render_reference_header(list(pic_texts), audio_text).splitlines():
         L.append(f"- {line}")
+    names = [n for n in (image_names or []) if n]
+    if names:
+        pairs = ", ".join(f"<Picture {i}> = {n}" for i, n in enumerate(names, 1))
+        L.append(f"Attached image files, in label order: {pairs}")
     L.append("")
     L.append(f"Forced audio: {wav_name} — effective duration "
              f"{total_sec:.3f} s = {frames} frames @ {FPS} fps (17k+5 grid). "
              f"Every cut timestamp must fall strictly inside it.")
+    if tts_seconds:
+        L.append(f"TTS length before padding: {tts_seconds:.3f} s.")
     if usable:
         tail = total_sec - max(u.end for u in usable if u.end is not None)
         L.append(f"Silent tail after the last utterance: {max(0.0, tail):.3f} s.")
+    L.append("Duration is already fixed by the toolkit; do not suggest one.")
     L.append("")
     L.append("Verbatim transcript, measured from the waveform "
              "(FIXED — reproduce each <d> exactly):")
