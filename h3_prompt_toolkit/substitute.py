@@ -239,9 +239,17 @@ def substitute(text: str, tl: Timeline, ts_map=None, d_map=None,
         else:
             res.report.append(f"[Shot {occ.shot}] {new} は境界に一致")
 
-    for occ in bare_occs:
-        res.report.append(
-            f"参考: \"At\" なしの時刻 {occ.raw} は置換対象外 … {occ.context}")
+    # -- 置換しなかった時刻は書式だけ MM:SS.mmm に揃える --------------------
+    edited = {(e.start, e.end) for e in edits}
+    for occ in bare_occs + res.at_occs + res.shot_occs:
+        if (occ.start, occ.end) in edited:
+            continue
+        canonical = fmt_ts(occ.sec)
+        if occ.raw == canonical:
+            continue
+        edits.append(Edit(occ.start, occ.end, canonical,
+                          f"書式 {occ.raw} → {canonical} (値は変えていない)"))
+        edited.add((occ.start, occ.end))
 
     # -- overall_soundscape / non_diegetic_music を N/A に -------------------
     if force_na:

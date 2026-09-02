@@ -13,10 +13,10 @@ retention_analysis:
 
 detailed_description:
 [Shot 1] Live-action style. The woman from <Picture 1> stands on the park path from <Picture 2>, facing the camera at a medium distance. The camera is static.
-At 0:00.512, she smiles and her lips start moving. S1 says, <d>[Japanese] こんにちは、今日はいい天気ですね。</d>. She closes her mouth after finishing.
-[Shot 2] At 0:03.008, the camera cuts to a wider angle including a man entering from the right.
-At 0:03.008, the man walks beside her. S2 says, <d>[Japanese] そうですね、散歩に行きましょう。</d>. Both walk slowly along the path.
-The camera holds until 0:05.875 as they walk away.
+At 00:00.512, she smiles and her lips start moving. S1 says, <d>[Japanese] こんにちは、今日はいい天気ですね。</d>. She closes her mouth after finishing.
+[Shot 2] At 00:03.008, the camera cuts to a wider angle including a man entering from the right.
+At 00:03.008, the man walks beside her. S2 says, <d>[Japanese] そうですね、散歩に行きましょう。</d>. Both walk slowly along the path.
+The camera holds until 00:05.875 as they walk away.
 
 overall_soundscape: N/A
 

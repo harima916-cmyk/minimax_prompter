@@ -9,13 +9,16 @@ from h3_prompt_toolkit.timeline import (Timeline, Utterance, build_timeline,
 
 class TestFmtTs(unittest.TestCase):
     def test_basic(self):
-        self.assertEqual(fmt_ts(0.0), "0:00.000")
-        self.assertEqual(fmt_ts(0.512), "0:00.512")
-        self.assertEqual(fmt_ts(65.25), "1:05.250")
+        # 公式ガイドと同じ MM:SS.mmm (分は 2 桁ゼロ埋め)
+        self.assertEqual(fmt_ts(0.0), "00:00.000")
+        self.assertEqual(fmt_ts(3.5), "00:03.500")
+        self.assertEqual(fmt_ts(0.512), "00:00.512")
+        self.assertEqual(fmt_ts(65.0), "01:05.000")
+        self.assertEqual(fmt_ts(65.25), "01:05.250")
         self.assertEqual(fmt_ts(600.0), "10:00.000")
 
     def test_negative_clamped(self):
-        self.assertEqual(fmt_ts(-3.0), "0:00.000")
+        self.assertEqual(fmt_ts(-3.0), "00:00.000")
 
     def test_roundtrip(self):
         for sec in (0.0, 0.512, 3.008, 5.875, 61.001, 599.999):

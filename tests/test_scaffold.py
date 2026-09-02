@@ -125,9 +125,9 @@ class TestBrief(unittest.TestCase):
         self.assertIn("Silent tail after the last utterance: 0.854 s.", self.brief)
 
     def test_verbatim_transcript_lines(self):
-        self.assertIn("[1] 0:00.512 - 0:02.104 (S1) "
+        self.assertIn("[1] 00:00.512 - 00:02.104 (S1) "
                       "<d>[Japanese] こんにちは、今日はいい天気ですね。</d>", self.brief)
-        self.assertIn("[2] 0:03.008 - 0:05.021 (S2) "
+        self.assertIn("[2] 00:03.008 - 00:05.021 (S2) "
                       "<d>[Japanese] そうですね、散歩に行きましょう。</d>", self.brief)
 
     def test_references_included(self):

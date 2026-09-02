@@ -41,8 +41,15 @@ class TestFields(unittest.TestCase):
 
 
 class TestTsFormat(unittest.TestCase):
+    def test_legacy_single_digit_minute_still_accepted(self):
+        # P1 で出力は MM:SS.mmm に統一したが、読み取りは M:SS.mmm も受ける
+        text = _path.fixture("ref2va_drifted.txt")
+        self.assertIn("At 0:00.500", text)
+        findings = validate(text, demo_tl())
+        self.assertEqual(levels(findings, "ts_format"), [])
+
     def test_missing_milliseconds(self):
-        text = _path.fixture("ref2va_good.txt").replace("At 0:00.512,", "At 0:00.5,")
+        text = _path.fixture("ref2va_good.txt").replace("At 00:00.512,", "At 00:00.5,")
         findings = validate(text, demo_tl())
         self.assertIn("error", levels(findings, "ts_format"))
 
@@ -87,14 +94,14 @@ class TestDialogueIdentity(unittest.TestCase):
 
 class TestMonotonicAndDuration(unittest.TestCase):
     def test_decreasing_timestamp(self):
-        text = _path.fixture("ref2va_good.txt").replace("At 0:03.008, the man",
-                                                        "At 0:01.000, the man")
+        text = _path.fixture("ref2va_good.txt").replace("At 00:03.008, the man",
+                                                        "At 00:01.000, the man")
         findings = validate(text, demo_tl())
         self.assertIn("error", levels(findings, "monotonic"))
 
     def test_beyond_duration(self):
-        text = _path.fixture("ref2va_good.txt").replace("until 0:05.875",
-                                                        "until 0:06.500")
+        text = _path.fixture("ref2va_good.txt").replace("until 00:05.875",
+                                                        "until 00:06.500")
         findings = validate(text, demo_tl())
         self.assertIn("error", levels(findings, "duration"))
 
@@ -135,7 +142,7 @@ class TestRefTags(unittest.TestCase):
 class TestShots(unittest.TestCase):
     def test_shot1_stamped(self):
         text = _path.fixture("ref2va_good.txt").replace(
-            "[Shot 1] Live-action", "[Shot 1] At 0:00.000, live-action")
+            "[Shot 1] Live-action", "[Shot 1] At 00:00.000, live-action")
         findings = validate(text, demo_tl())
         self.assertIn("warn", levels(findings, "shots"))
 
@@ -146,7 +153,7 @@ class TestShots(unittest.TestCase):
 
     def test_later_shot_unstamped(self):
         text = _path.fixture("ref2va_good.txt").replace(
-            "[Shot 2] At 0:03.008, the camera cuts", "[Shot 2] The camera cuts")
+            "[Shot 2] At 00:03.008, the camera cuts", "[Shot 2] The camera cuts")
         findings = validate(text, demo_tl())
         self.assertIn("warn", levels(findings, "shots"))
 

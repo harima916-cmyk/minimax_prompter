@@ -132,7 +132,7 @@ class TestCli(unittest.TestCase):
         code, out, err = run_cli("substitute", "--timeline", self.tl_json,
                                  src, "--ts-map", "1,3")
         self.assertEqual(code, 0)
-        self.assertIn("At 0:00.512", out)
+        self.assertIn("At 00:00.512", out)
 
     def test_validate_exit_codes(self):
         good = os.path.join(self.dir, "good.txt")
