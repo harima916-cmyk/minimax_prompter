@@ -39,7 +39,30 @@ CHECKS = (
     ("ts_match", "実測との一致"),
     ("resolution", "解像度非依存"),
     ("anchor", "アンカー整合"),
+    ("negation", "否定語"),
+    ("softness", "軟化語"),
+    ("length", "描写の長さ"),
+    ("lipsync_cue", "リップシンク句"),
 )
+
+# 仕様書 §6: ガイダンスは重みに焼き込まれていて否定分岐が無い。否定は
+# 逆効果 (名前を出すと出やすくなる) なので、書かせない。
+NEGATION = re.compile(
+    r"\b(?:no|not|never|without|don't|doesn't|cannot|can't|avoid|"
+    r"nothing|none|neither|nor)\b", re.IGNORECASE)
+
+# 仕様書 §8: リップシンクは口が読めて初めて成立する。画を甘くする語は
+# 口元を潰すので警告する。
+SOFTNESS = re.compile(
+    r"(?:shallow depth of field|soft focus|bokeh|dreamy|hazy|misty|"
+    r"diffused light|motion blur|vintage film|Instagram Live)", re.IGNORECASE)
+
+LIPSYNC_CUE = re.compile(r"synchroniz", re.IGNORECASE)
+
+# 仕様書 §10 の目安 350-500 語。外れをすぐ弾くのではなく、明らかに
+# 短い / 長いときだけ言う。
+DD_WORDS_MIN = 200
+DD_WORDS_MAX = 600
 
 # [Shot 1] が <Picture 1> から始まると書いてある句
 ANCHOR_PHRASE = re.compile(
@@ -299,6 +322,41 @@ def validate(text: str, tl: Timeline | None = None, expect_na: bool = True):
             f.append(Finding("resolution", WARN,
                              f"解像度・工程に依存する語: 「{m.group(0)}」 — "
                              "同じプロンプトを精修パスで使い回せなくなります"))
+
+    # -- 仕様書 §6 / §10 の機械チェック (台詞の中は対象外) --------------------
+    if dd_body:
+        outside = ref2va.DIALOGUE.sub(" ", dd_body)
+        seen = set()
+        for m in NEGATION.finditer(outside):
+            word = m.group(0).lower()
+            if word in seen:
+                continue
+            seen.add(word)
+            f.append(Finding("negation", WARN,
+                             f"否定語「{m.group(0)}」— 否定分岐が無いので逆効果 "
+                             "(欲しい状態を肯定形で書く)"))
+        for m in SOFTNESS.finditer(outside):
+            f.append(Finding("softness", WARN,
+                             f"軟化語「{m.group(0)}」— 口元が潰れてリップシンクが"
+                             "読めなくなります"))
+
+        words = len(outside.split())
+        if words < DD_WORDS_MIN:
+            f.append(Finding("length", WARN,
+                             f"detailed_description が {words} 語 — "
+                             f"目安 350-500 に対して短すぎます"))
+        elif words > DD_WORDS_MAX:
+            f.append(Finding("length", WARN,
+                             f"detailed_description が {words} 語 — "
+                             f"目安 350-500 に対して長すぎます (高解像度で"
+                             "指示追従が落ちます)"))
+
+        if tl is not None and tl.usable_utterances() and \
+                not LIPSYNC_CUE.search(outside):
+            f.append(Finding("lipsync_cue", INFO,
+                             "リップシンクの一文がありません "
+                             "(例: Her lip movements are perfectly "
+                             "synchronized with her words.)"))
 
     # -- 実測タイムスタンプとの一致 -----------------------------------------
     if tl is not None:

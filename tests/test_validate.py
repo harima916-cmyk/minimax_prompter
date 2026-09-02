@@ -54,7 +54,8 @@ class TestTsFormat(unittest.TestCase):
         self.assertIn("error", levels(findings, "ts_format"))
 
     def test_unbalanced_dialogue_tags(self):
-        text = _path.fixture("ref2va_good.txt").replace("</d>. She closes", ". She closes", 1)
+        text = _path.fixture("ref2va_good.txt").replace(
+            "ですね。</d>. Her lip movements", "ですね。. Her lip movements", 1)
         findings = validate(text, demo_tl())
         self.assertIn("error", levels(findings, "ts_format"))
 
@@ -94,8 +95,8 @@ class TestDialogueIdentity(unittest.TestCase):
 
 class TestMonotonicAndDuration(unittest.TestCase):
     def test_decreasing_timestamp(self):
-        text = _path.fixture("ref2va_good.txt").replace("At 00:03.008, the man",
-                                                        "At 00:01.000, the man")
+        text = _path.fixture("ref2va_good.txt").replace("At 00:03.008, he tips",
+                                                        "At 00:01.000, he tips")
         findings = validate(text, demo_tl())
         self.assertIn("error", levels(findings, "monotonic"))
 
@@ -114,8 +115,8 @@ class TestSpeakers(unittest.TestCase):
 
     def test_unknown_extra_speaker(self):
         text = _path.fixture("ref2va_good.txt").replace(
-            "Both walk slowly along the path.",
-            "Both walk slowly along the path. S3 hums quietly.")
+            "Petals drift across the frame",
+            "S3 hums quietly. Petals drift across the frame")
         findings = validate(text, demo_tl())
         self.assertIn("warn", levels(findings, "speakers"))
 
@@ -129,7 +130,8 @@ class TestRefTags(unittest.TestCase):
 
     def test_video_not_connected(self):
         text = _path.fixture("ref2va_good.txt").replace(
-            "reused as-is.", "reused as-is with <Video 1> motion.")
+            "reused unchanged as the complete final audio track.",
+            "reused unchanged, with <Video 1> supplying motion.")
         findings = validate(text, demo_tl())
         self.assertIn("warn", levels(findings, "ref_tags"))
 
@@ -142,7 +144,7 @@ class TestRefTags(unittest.TestCase):
 class TestShots(unittest.TestCase):
     def test_shot1_stamped(self):
         text = _path.fixture("ref2va_good.txt").replace(
-            "[Shot 1] Live-action", "[Shot 1] At 00:00.000, live-action")
+            "[Shot 1] A medium close-up", "[Shot 1] At 00:00.000, a medium close-up")
         findings = validate(text, demo_tl())
         self.assertIn("warn", levels(findings, "shots"))
 
@@ -268,7 +270,8 @@ class TestResolutionIndependence(unittest.TestCase):
         for word in ("768p", "1344x768", "0.4 MP", "low-res", "upscaled",
                      "draft", "refinement pass"):
             text = _path.fixture("ref2va_good.txt").replace(
-                "Live-action style.", f"Live-action style, {word}.")
+                "The camera holds a static shot",
+                f"The camera holds a static shot at {word}")
             findings = validate(text, demo_tl())
             self.assertIn("warn", levels(findings, "resolution"),
                           f"{word} が検出されない")
@@ -276,6 +279,74 @@ class TestResolutionIndependence(unittest.TestCase):
     def test_good_passes(self):
         findings = validate(_path.fixture("ref2va_good.txt"), demo_tl())
         self.assertEqual(levels(findings, "resolution"), [])
+
+
+class TestGuideChecks(unittest.TestCase):
+    """P3: 仕様書 §6 / §10 の機械チェック。"""
+
+    def setUp(self):
+        self.good = _path.fixture("ref2va_good.txt")
+
+    def test_good_is_clean(self):
+        findings = validate(self.good, demo_tl())
+        for check in ("negation", "softness", "length", "lipsync_cue"):
+            self.assertEqual(levels(findings, check), [], render_report(findings))
+
+    def test_negation_words(self):
+        for word in ("no", "not", "never", "without", "avoid"):
+            text = self.good.replace(
+                "The camera holds a static shot",
+                f"The camera holds a static shot with {word} sudden movement")
+            findings = validate(text, demo_tl())
+            self.assertIn("warn", levels(findings, "negation"), word)
+
+    def test_negation_inside_dialogue_is_ignored(self):
+        text = self.good.replace("<d>[Japanese] こんにちは、今日はいい天気ですね。</d>",
+                                 "<d>[English] No, not today.</d>")
+        findings = validate(text, demo_tl())
+        self.assertEqual(levels(findings, "negation"), [])
+
+    def test_softness_words(self):
+        for word in ("shallow depth of field", "soft focus", "bokeh",
+                     "motion blur", "vintage film"):
+            text = self.good.replace("The camera holds a static shot",
+                                     f"The camera holds a static shot with {word}")
+            findings = validate(text, demo_tl())
+            self.assertIn("warn", levels(findings, "softness"), word)
+
+    def test_too_short(self):
+        text = self.good.split("detailed_description:")[0] + (
+            "detailed_description:\n[Shot 1] She speaks. S1 says, "
+            "<d>[Japanese] こんにちは、今日はいい天気ですね。</d>. Lip movements are "
+            "synchronized. S2 says, <d>[Japanese] そうですね、散歩に行きましょう。</d>."
+            "\n\noverall_soundscape: N/A\n\nnon_diegetic_music: N/A\n")
+        findings = validate(text, demo_tl())
+        self.assertIn("warn", levels(findings, "length"))
+
+    def test_too_long(self):
+        filler = " The light shifts across the path in slow steady waves."
+        text = self.good.replace("Both of them step off together",
+                                 filler * 60 + " Both of them step off together")
+        findings = validate(text, demo_tl())
+        self.assertIn("warn", levels(findings, "length"))
+
+    def test_missing_lipsync_cue_is_info(self):
+        text = self.good.replace(
+            "Her lip movements are perfectly synchronized with her words. ", "")
+        text = text.replace("His lip movements stay synchronized with the line",
+                            "He keeps his head tilted")
+        findings = validate(text, demo_tl())
+        self.assertIn("info", levels(findings, "lipsync_cue"))
+
+    def test_no_utterances_no_cue_needed(self):
+        from h3_prompt_toolkit.timeline import Timeline
+        empty = Timeline(total_sec=5.875, frames=141)
+        text = self.good.replace(
+            "Her lip movements are perfectly synchronized with her words. ", "")
+        text = text.replace("His lip movements stay synchronized with the line",
+                            "He keeps his head tilted")
+        findings = validate(text, empty)
+        self.assertEqual(levels(findings, "lipsync_cue"), [])
 
 
 class TestTsMatch(unittest.TestCase):
